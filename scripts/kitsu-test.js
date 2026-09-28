@@ -88,6 +88,12 @@ async function main() {
   );
   ok(noItalian.description === 'Only English synopsis', 'merge: Kitsu come fallback quando manca la trama italiana', noItalian.description.slice(0, 30));
 
+  // 7) cast: AniList GraphQL, doppiatori preferiti, mai errori.
+  const cast = await kitsu.fetchCast(197754);
+  ok(Array.isArray(cast) && cast.length > 0, 'cast: lista attori per Liar Game', String((cast || []).slice(0, 4)));
+  const bad = await kitsu.fetchCast(null);
+  ok(bad === null, 'cast: senza anilist id -> null');
+
   // 7) Addon raggiungibile? Se il flusso principale è fallito per problemi di rete
   //    lo segnaliamo chiaramente (il test 3 fallirebbe già, così l'errore è esplicito).
   if (!info1 && !info2) {
