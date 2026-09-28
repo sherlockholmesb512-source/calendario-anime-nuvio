@@ -268,6 +268,28 @@ async function buildMeta(slug, type, num, baseId) {
   }
   const merged = kitsu.mergeWithPage(page, kinfo) || {};
 
+  // Rete di sicurezza TMDB: se l'enrich in background non ha ancora prodotto
+  // thumbnail/trame episodio (es. addon lento su Render che fa perdere la corsa
+  // on-demand), interroghiamo TMDB per titolo+anno — due richieste veloci, in
+  // cache condivisa, di modo che gli episodi non restino mai con la sola
+  // copertina. La copertina resta comunque l'ultimo fallback.
+  if (config.tmdbApiKey && !merged.episodeThumbs && page.title) {
+    try {
+      const tm = await Promise.race([
+        kitsu.fetchTmdbSeason(null, page.title, page.year),
+        new Promise((resolve) => setTimeout(() => resolve(META_ENRICH_WAIT), 3000)),
+      ]);
+      if (tm && tm !== META_ENRICH_WAIT) {
+        if (tm.thumbs) merged.episodeThumbs = tm.thumbs;
+        if (tm.overviews) {
+          merged.episodeOverviews = { ...(merged.episodeOverviews || {}), ...tm.overviews };
+        }
+      }
+    } catch {
+      // la scheda resta comunque completa: gli episodi useranno la copertina
+    }
+  }
+
   const videos = (page.videos || []).map((v) => ({
     id: ids.videoId(v.num, slug),
     title:
@@ -276,13 +298,16 @@ async function buildMeta(slug, type, num, baseId) {
         : `Episodio ${v.num}`,
     season: 1,
     episode: v.num,
-    // Miniatura del singolo episodio quando disponibile (Kitsu/metahub);
+    // Miniatura del singolo episodio quando disponibile (Kitsu/TMDB/metahub);
     // altrimenti la copertina dell'anime (sempre presente, mai vuota).
     thumbnail:
       (merged.episodeThumbs && merged.episodeThumbs[v.num]) ||
       merged.poster ||
       page.poster ||
       copertine(slug),
+    // Trama del singolo episodio in italiano (TMDB) quando disponibile.
+    overview:
+      (merged.episodeOverviews && merged.episodeOverviews[v.num]) || undefined,
   }));
 
   const notes = [
