@@ -155,8 +155,12 @@ Per aggiornarlo, da dentro la cartella:
 railway up --service calendario-anime-nuvio --yes
 ```
 
-Variabili d'ambiente disponibili: vedi `.env.example`. Le uniche interessanti sono
-`REFRESH_MS` (default 5 minuti) e `INCLUDE_INDETERMINATE` (vedi sotto).
+Variabili d'ambiente disponibili: vedi `.env.example`. Le principali sono
+`REFRESH_MS` (default 5 minuti), `INCLUDE_INDETERMINATE` (vedi sotto),
+`META_ENRICH_TIMEOUT_MS` (budget per le richieste /meta: oltre il tempo la
+scheda risponde subito con la trama AnimeWorld e l'arricchimento prosegue in
+background) e `TMDB_API_KEY` (miniature episodio affidabili da TMDB quando
+l'addon e kitso.io non coprono il titolo; da impostare nel pannello Render).
 
 ---
 
