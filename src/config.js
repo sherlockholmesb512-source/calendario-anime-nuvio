@@ -60,7 +60,13 @@ module.exports = {
   kitsuBase: process.env.KITSU_BASE || 'https://anime-kitsu.strem.fun',
   kitsuEnabled: process.env.KITSU_ENABLED !== 'false',
   kitsuCacheMs: Number(process.env.KITSU_CACHE_MS || minutes(60 * 24)),
-  kitsuTimeoutMs: Number(process.env.KITSU_TIMEOUT_MS || 8000),
+  // L'addon Kitsu puo' essere lento a freddo o indisponibile: 20 s e un retry.
+  kitsuTimeoutMs: Number(process.env.KITSU_TIMEOUT_MS || 20000),
+
+  // Cast (attori e doppiatori) da AniList GraphQL (dati pubblici, nessuna chiave).
+  // Preferiti i doppiatori italiani; senza, i seiyuu giapponesi; senza, i nomi
+  // dei personaggi principali. CAST_ENABLED=false per disattivarlo.
+  castEnabled: process.env.CAST_ENABLED !== 'false',
 
   // Svuota-cache automatico: ogni 30 minuti vengono eliminate le cache locali
   // (pagine /play, stream risolti, metadati Kitsu) per liberare spazio ed
