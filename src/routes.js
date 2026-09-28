@@ -239,8 +239,9 @@ async function buildMeta(slug, type, num, baseId) {
 
   // Kitsu: se gia' arricchito in background lo usiamo; altrimenti (deep link,
   // slug mai passato dalla coda) lo chiediamo qui, una sola volta per slug.
+  // Le voci "parziali" scadute vengono ritentate per far arrivare le thumbnail.
   let kinfo = kitsu.peek(slug);
-  if (!kinfo && config.kitsuEnabled) {
+  if ((!kinfo || kitsu.needsRetry(slug)) && config.kitsuEnabled) {
     try {
       kinfo = await kitsu.enrichFor(slug, page);
     } catch (err) {
