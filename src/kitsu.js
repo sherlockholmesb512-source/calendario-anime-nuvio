@@ -659,4 +659,49 @@ function flush() {
   return n;
 }
 
-module.exports = { enrichFor, peek, needsRetry, mergeWithPage, normalizeTitle, pickBestMatch, stats, flush, fetchCast, fetchKitsuThumbs, fetchMetahubThumbs, fetchTmdbThumbs, fetchTmdbSeason };
+/**
+ * Svuotamento SELEZIONATO: elimina SOLO le voci scadute (piu' vecchie del
+ * proprio TTL) da tutte le cache, lasciando intatte quelle ancora fresche.
+ * Ritorna i conteggi e gli slug da ri-arricchire. A differenza di flush() non
+ * azzera nulla: l'addon Kitsu e TMDB non vengono ri-contattati in blocco e la
+ * coda ri-accoda soltanto gli slug davvero scaduti.
+ */
+function flushExpired() {
+  const now = Date.now();
+  const out = { slug: 0, meta: 0, search: 0, cast: 0, tmdb: 0, fail: 0, evicted: [] };
+  for (const [key, e] of slugInfo) {
+    if (fresh(e, now)) continue;
+    slugInfo.delete(key);
+    out.slug += 1;
+    out.evicted.push(key);
+  }
+  for (const [k, e] of metaCache) {
+    if (fresh(e, now)) continue;
+    metaCache.delete(k);
+    out.meta += 1;
+  }
+  for (const [k, e] of searchCache) {
+    if (fresh(e, now)) continue;
+    searchCache.delete(k);
+    out.search += 1;
+  }
+  for (const [k, e] of castCache) {
+    if (fresh(e, now)) continue;
+    castCache.delete(k);
+    out.cast += 1;
+  }
+  for (const [k, e] of tmdbCache) {
+    if (fresh(e, now)) continue;
+    tmdbCache.delete(k);
+    out.tmdb += 1;
+  }
+  for (const [k, at] of failMark) {
+    if (now - at >= NEG_TTL) {
+      failMark.delete(k);
+      out.fail += 1;
+    }
+  }
+  return out;
+}
+
+module.exports = { enrichFor, peek, needsRetry, mergeWithPage, normalizeTitle, pickBestMatch, stats, flush, flushExpired, fetchCast, fetchKitsuThumbs, fetchMetahubThumbs, fetchTmdbThumbs, fetchTmdbSeason };
