@@ -46,6 +46,17 @@ function italyZoneAbbr(now = new Date()) {
 const clean = (text) => (text || '').replace(/\s+/g, ' ').trim();
 const cap = (text) => clean(text).slice(0, 4000);
 
+/**
+ * Poster "copertine" di AnimeWorld costruito dall'id dell'opera contenuto nello
+ * slug (es. `liar-game.MVKsv` -> `https://img.animeworld.ac/copertine/MVKsv.jpg`).
+ * Usato come ultima spiaggia: cosi' card e miniature non restano MAI vuote.
+ */
+const copertine = (slug) => {
+  const parts = String(slug || '').split('.');
+  const id = (parts[parts.length - 1] || '').trim();
+  return /^[A-Za-z0-9_-]{1,32}$/.test(id) ? `https://img.animeworld.ac/copertine/${id}.jpg` : null;
+};
+
 function paginate(items, skip, limit) {
   const from = Math.max(0, Number(skip) || 0);
   const size = Math.min(Math.max(Number(limit) || config.pageSize, 1), 1200);
@@ -68,7 +79,7 @@ function lightMeta(slug, fallbackName, fallbackPoster) {
     const merged = kitsu.mergeWithPage(page, kitsu.peek(slug));
     return {
       name: page.title || fallbackName,
-      poster: (merged && merged.poster) || page.poster || fallbackPoster,
+      poster: (merged && merged.poster) || page.poster || copertine(slug) || fallbackPoster,
       description: (merged && merged.description) || page.description,
       genres: (merged && merged.genres) || page.genres,
       year: (merged && merged.year) || page.year,
@@ -247,11 +258,12 @@ async function buildMeta(slug, type, num, baseId) {
     season: 1,
     episode: v.num,
     // Miniatura del singolo episodio quando disponibile (Kitsu/metahub);
-    // altrimenti la copertina dell'anime.
+    // altrimenti la copertina dell'anime (sempre presente, mai vuota).
     thumbnail:
       (merged.episodeThumbs && merged.episodeThumbs[v.num]) ||
       merged.poster ||
-      page.poster,
+      page.poster ||
+      copertine(slug),
   }));
 
   const notes = [
@@ -269,13 +281,14 @@ async function buildMeta(slug, type, num, baseId) {
     id: baseId,
     type,
     name: page.title,
-    poster: merged.poster || page.poster,
+    poster: merged.poster || page.poster || copertine(slug),
     description: cap([merged.description || page.description, notes.join(' · ')].filter(Boolean).join('\n\n')),
     releaseInfo: merged.year || page.year || '',
     genres: merged.genres || page.genres || [],
     imdbRating: merged.rating || page.rating || undefined,
     background: merged.background || undefined,
     logo: merged.logo || undefined,
+    cast: merged.cast && merged.cast.length ? merged.cast : undefined,
     posterShape: 'poster',
     links: [{ name: 'Apri su AnimeWorld', category: 'Anime', url: page.pageUrl }],
   };
