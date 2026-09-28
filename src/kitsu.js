@@ -284,6 +284,19 @@ function pickTvMatch(cands, year) {
 }
 
 /**
+ * Titolo "pulito" per la ricerca TMDB: AnimeWorld aggiunge i suffissi
+ * "(ITA)", "(SUB ITA)", "(DOPPIATO)" ecc. che mandano a vuoto la query.
+ */
+function tmdbSearchTitle(title) {
+  return String(title || '')
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .replace(/[|]/g, ' ')
+    .replace(/\b(ITA|SUB|DOP|DOPPIATO|SOTTOTITOLATO)\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
  * Ritorna { thumbs: {n: urlStill}, overviews: {n: tramaIta} } per la stagione 1.
  * Mappa per imdb_id (strada preferita) o, in mancanza, per titolo+anno
  * (utile quando la risposta dell'addon da Render non porta l'imdb_id).
@@ -292,7 +305,12 @@ async function fetchTmdbSeason(imdbId, title, year) {
   const key = config.tmdbApiKey;
   const imdb = String(imdbId || '').trim();
   const hasImdb = /^tt\d+$/.test(imdb);
-  const cacheKey = hasImdb ? `i:${imdb}` : title ? `t:${normalizeTitle(title)}|${year || ''}` : null;
+  const cleanTitle = tmdbSearchTitle(title);
+  const cacheKey = hasImdb
+    ? `i:${imdb}`
+    : cleanTitle
+      ? `t:${normalizeTitle(cleanTitle)}|${year || ''}`
+      : null;
   if (!key || !cacheKey) return null;
   const hit = tmdbCache.get(cacheKey);
   if (fresh(hit)) return hit.data;
@@ -308,9 +326,9 @@ async function fetchTmdbSeason(imdbId, title, year) {
       );
       tvId = (find && find.tv_results && find.tv_results[0] && find.tv_results[0].id) || null;
     }
-    if (!tvId && title) {
+    if (!tvId && cleanTitle) {
       const src = await requestJson(
-        `${TMDB}/search/tv?api_key=${encodeURIComponent(key)}&query=${encodeURIComponent(title)}&language=it-IT${year ? `&year=${encodeURIComponent(year)}` : ''}`,
+        `${TMDB}/search/tv?api_key=${encodeURIComponent(key)}&query=${encodeURIComponent(cleanTitle)}&language=it-IT${year ? `&year=${encodeURIComponent(year)}` : ''}`,
         {},
         2,
         12000,
