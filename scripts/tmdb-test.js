@@ -1,23 +1,24 @@
 'use strict';
-// Test TMDB thumbnails: verifica che fetchTmdbThumbs trovi gli still per
-// episodio a partire dall'imdb_id (es. FMA tt0421357, Liar Game tt39229633).
+// Test TMDB per-episodio: still (thumbnail) e trame italiane (overview) per
+// stagione, a partire dall'imdb_id (FMA tt0421357, Liar Game tt39229633).
 const kitsu = require('../src/kitsu');
 
-const IMDB = [
-  'tt0421357', // Fullmetal Alchemist
-  'tt39229633', // Liar Game
-  'tt1475582', // Sherlock (controllo: niente anime)
+const CASES = [
+  ['tt0421357', 'Fullmetal Alchemist', 2003],
+  ['tt39229633', 'Liar Game', 2007],
 ];
 
 (async () => {
-  for (const id of IMDB) {
+  let ok = 0;
+  for (const [imdb, name, year] of CASES) {
     try {
       const t0 = Date.now();
-      const thumbs = await kitsu.fetchTmdbThumbs(id);
-      const keys = Object.keys(thumbs || {}).map(Number);
+      const data = await kitsu.fetchTmdbSeason(imdb, name, year);
+      const keys = Object.keys((data && data.thumbs) || {}).map(Number);
+      const okeys = Object.keys((data && data.overviews) || {}).map(Number);
       const min = keys.length ? Math.min(...keys) : 0;
       const max = keys.length ? Math.max(...keys) : 0;
-      const sample = thumbs && thumbs[min];
+      const sample = data && data.thumbs && data.thumbs[min];
       let code = 'n/a';
       if (sample) {
         try {
@@ -26,13 +27,18 @@ const IMDB = [
           code = 'ERR';
         }
       }
+      const ov = data && data.overviews && data.overviews[min];
+      const good = code === 200 && ov;
+      if (good) ok++;
       console.log(
-        `${id}: ${keys.length} still (ep ${min}-${max}) in ${Date.now() - t0}ms | primo=[${sample}] (${code})`,
+        `${good ? 'OK ' : 'NO '} ${imdb} (${name}): ${keys.length} still (ep ${min}-${max}) ${okeys.length} trame in ${Date.now() - t0}ms | ep${min} still [${code}] trama_len=${ov ? ov.length : 0}`,
       );
+      if (ov) console.log(`       trama ep${min}: ${ov.slice(0, 110)}...`);
     } catch (err) {
-      console.log(`${id}: ERR ${err.message}`);
+      console.log(`${imdb}: ERR ${err.message}`);
     }
   }
+  console.log(`\n${ok}/${CASES.length} OK`);
 })().catch((e) => {
   console.error(e);
   process.exit(1);
