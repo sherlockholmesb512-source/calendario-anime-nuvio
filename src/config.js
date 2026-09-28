@@ -72,6 +72,20 @@ module.exports = {
   // restano pubblici, la chiave identifica l'app. '' = fonte disattivata.
   tmdbApiKey: process.env.TMDB_API_KEY || '',
 
+  // Fonti stream AGGIUNTIVE da EasyStreams (addon solo-stream italiano di
+  // terze parti): accanto allo streaming diretto AnimeWorld, ogni episodio
+  // espone anche i flussi risolti da EasyStreams (torrent/http). Imposta
+  // EASYSTREAMS_URL='' per disattivare; di default usa il manifest di terze
+  // parti. Il suffisso "id:stagione:episodio" segue il protocollo Stremio.
+  easyStreamsUrl:
+    process.env.EASYSTREAMS_URL === undefined
+      ? 'https://easystreams.realbestia.com/eyJzdHJlYW1QcmVmZXJlbmNlIjoiaHR0cCIsImRpc2FibGVkUHJvdmlkZXJzIjoiIn0'
+      : (process.env.EASYSTREAMS_URL || ''),
+  // EasyStreams e' lento e variabile (1-12 s): risposta limitata a questo budget,
+  // poi si replica con il solo stream AnimeWorld. La risposta e' in cache 10 minuti.
+  easyStreamsTimeoutMs: Number(process.env.EASYSTREAMS_TIMEOUT_MS || 10000),
+  easyStreamsTtlMs: Number(process.env.EASYSTREAMS_CACHE_MS || minutes(10)),
+
   // Nella richiesta /meta il budget massimo per l'arricchimento Kitsu on-demand:
   // oltre questo tempo la scheda risponde subito con i soli dati AnimeWorld
   // (la trama deve essere leggibile da subito) e l'arricchimento prosegue in
