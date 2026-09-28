@@ -8,7 +8,7 @@ const store = require('./store');
 const enrich = require('./enrich');
 const { buildManifest } = require('./manifest');
 const routes = require('./routes');
-const { flushCaches } = require('./aw/play');
+const { flushExpired } = require('./aw/play');
 const kitsu = require('./kitsu');
 const sweep = require('./sweep');
 
@@ -121,18 +121,26 @@ async function bootstrap() {
   );
   if (hook.unref) hook.unref();
 
-  // Svuota-cache automatico: ogni 30 minuti si eliminano le cache locali
-  // (pagine /play, stream risolti, metadati Kitsu) per liberare spazio ed
-  // evitare dati stantii; subito dopo le schede vengono ri-accodate per
-  // ri-arricchirsi in background.
+  // Svuota-cache SELEZIONATO: ogni 30 minuti si eliminano solo le voci SCADUTE
+  // (pagine /play oltre il TTL, stream risolti, summary Kitsu, TMDB) lasciando
+  // intatte quelle ancora fresche; subito dopo vengono ri-accodati solo gli
+  // slug scaduti. Niente piu' riscrapiatura in blocco di AnimeWorld: i dati
+  // rimangono in cache finche' non invecchiano davvero.
   if (config.cacheSweepMs > 0) {
     const sweeper = setInterval(() => {
-      const caches = flushCaches();
-      const kitsuFlushed = kitsu.flush();
-      const reenqueued = enrich.enqueue(allCatalogSlugs());
-      sweep.note({ lastAt: new Date().toISOString(), ...caches, kitsu: kitsuFlushed, reenqueued });
+      const pages = flushExpired();
+      const kitsuSwept = kitsu.flushExpired();
+      const reenqueued = enrich.enqueue(pages.evicted.concat(kitsuSwept.evicted));
+      sweep.note({
+        lastAt: new Date().toISOString(),
+        pages: pages.pages,
+        streams: pages.streams,
+        kitsu: kitsuSwept.slug,
+        reenqueued,
+      });
       console.log(
-        `[sweep] cache svuotate: ${caches.pages} pagine, ${caches.streams} stream, ${kitsuFlushed} voci kitsu — ${reenqueued} schede ri-accodate`,
+        `[sweep] voci scadute rimosse: ${pages.pages} pagine, ${pages.streams} stream, ` +
+          `${kitsuSwept.slug} kitsu, ${kitsuSwept.tmdb} tmdb — ${reenqueued} schede ri-accodate`,
       );
     }, config.cacheSweepMs);
     if (sweeper.unref) sweeper.unref();
