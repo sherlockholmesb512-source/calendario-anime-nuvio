@@ -41,6 +41,7 @@ function buildManifest(baseUrl) {
             isRequired: false,
             options: ['0', '200', '400', '600', '800', '1000', '1200'],
           },
+          { name: 'search', isRequired: false },
         ],
       },
       {
@@ -54,6 +55,7 @@ function buildManifest(baseUrl) {
             isRequired: false,
             options: ['0', '200', '400', '600', '800', '1000', '1200'],
           },
+          { name: 'search', isRequired: false },
         ],
       },
       {
@@ -67,6 +69,7 @@ function buildManifest(baseUrl) {
             isRequired: false,
             options: ['0', '200', '400', '600', '800', '1000', '1200'],
           },
+          { name: 'search', isRequired: false },
         ],
       },
       {
@@ -80,6 +83,7 @@ function buildManifest(baseUrl) {
             isRequired: false,
             options: ['0', '200', '400', '600', '800', '1000', '1200'],
           },
+          { name: 'search', isRequired: false },
         ],
       },
     ],
