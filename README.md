@@ -24,16 +24,16 @@ rientra in nessuno di quei controlli. Per lo stesso motivo i percorsi storici
 **Impostazioni → Addon → Aggiungi addon**, poi incolla:
 
 ```
-https://calendario-anime-nuvio-production.up.railway.app/manifest.json
+https://calendario-anime-sgjw.onrender.com/manifest.json
 ```
 
 Su Android / Apple TV si può usare direttamente la deep link:
 
 ```
-stremio://calendario-anime-nuvio-production.up.railway.app/manifest.json
+stremio://calendario-anime-sgjw.onrender.com/manifest.json
 ```
 
-La pagina `https://calendario-anime-nuvio-production.up.railway.app/` mostra lo stato
+La pagina `https://calendario-anime-sgjw.onrender.com/` mostra lo stato
 dei cataloghi e gli endpoint disponibili.
 
 ---
@@ -123,16 +123,30 @@ npm run assets       # rigenera public/logo.png e public/background.png
 
 ---
 
-## Deploy su Railway
+## Deploy su GitHub + Render
 
-Il progetto è ** già online** su
-`https://calendario-anime-nuvio-production.up.railway.app` (progetto `calendario-anime-nuvio`).
-La configurazione è in `railway.json` (build Nixpacks, healthcheck su `/health`) e `Procfile`.
+Codice sorgente su GitHub:
+**https://github.com/sherlockholmesb512-source/calendario-anime-nuvio** (branch `main`).
 
-Per aggiornarlo:
+Ogni push sul branch `main` ri-deploya automaticamente il servizio su Render
+(`autoDeploy: yes`). Dopo la creazione/aggiornamento del servizio l'addon è raggiungibile a:
+
+```
+https://calendario-anime-sgjw.onrender.com/manifest.json
+```
+
+Dashboard: https://dashboard.render.com/web/srv-datc1kou01pc73e1v03g
+
+### Deploy su Railway
+
+Il progetto era inizialmente su Railway
+(`https://calendario-anime-nuvio-production.up.railway.app`, progetto `calendario-anime-nuvio`);
+la configurazione è in `railway.json` (build Nixpacks, healthcheck su `/health`) e `Procfile`.
+
+Per aggiornarlo, da dentro la cartella:
 
 ```bash
-railway up
+railway up --service calendario-anime-nuvio --yes
 ```
 
 Variabili d'ambiente disponibili: vedi `.env.example`. Le uniche interessanti sono
