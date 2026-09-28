@@ -47,6 +47,19 @@ const animeKey = (slug) => {
   return i < 0 ? s : s.slice(i + 1);
 };
 
+/**
+ * Stagione dell'anime ricavata dallo slug di AnimeWorld: i sequel sono nominati
+ * "<titolo>-<N>-ita" (es. rezero-kara-hajimeru-isekai-seikatsu-4-ita, o
+ * mission-yozakura-family-2-ita.MUrbA). Il numero di stagione precede sempre
+ * "-ita": i numeri nel titolo (es. kaiju-no-8-narumis-...) NON contano. In
+ * assenza di marcatore la stagione e' 1.
+ */
+const seasonOf = (slug) => {
+  const m = /-(\d{1,2})(?:-(?:sub|dub|eng))?-ita(?=\.|$)/i.exec(String(slug || ''));
+  const n = m ? Number(m[1]) : 1;
+  return Number.isInteger(n) && n >= 1 && n <= 99 ? n : 1;
+};
+
 module.exports = {
   AW_ANIME,
   AW_META_EP,
@@ -58,4 +71,5 @@ module.exports = {
   parseEpisodeMeta,
   parseVideo,
   animeKey,
+  seasonOf,
 };
