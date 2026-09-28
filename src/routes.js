@@ -86,36 +86,55 @@ function humanSize(bytes) {
 // ---------------------------------------------------------------------------
 
 const easyStreamsCache = new Map(); // "tipo|id" -> { at, streams }
+const easyStreamsNegCache = new Map(); // "tipo|id" -> { at } (ultimo insuccesso)
 const easyStreamsInflight = new Map();
+const easyStreamsStats = { calls: 0, ok: 0, empty: 0, errors: 0, lastMs: 0, lastErrorAt: 0 };
 
 /**
  * Interroga EasyStreams per { type: 'series'|'movie', id } e restituisce i suoi
- * flussi (torrent o http). Timeout breve (l'addon e' lento): dopo il budget si
- * replica con il solo stream AnimeWorld. Risposta in cache TTL lungo.
+ * flussi (torrent o http). Timeout breve (l'addon e' lento e variabile): dopo
+ * il budget si replica con il solo stream AnimeWorld. Risposta in cache TTL
+ * lungo; gli insuccessi in una cache negativa breve (niente giri a vuoto).
  */
 async function fetchEasyStreams(type, id) {
   if (!config.easyStreamsUrl || !id) return [];
   const cacheKey = `${type}|${id}`;
   const hit = easyStreamsCache.get(cacheKey);
   if (hit && Date.now() - hit.at < config.easyStreamsTtlMs) return hit.streams;
+  const neg = easyStreamsNegCache.get(cacheKey);
+  if (neg && Date.now() - neg.at < config.easyStreamsNegTtlMs) return [];
   if (easyStreamsInflight.has(cacheKey)) return easyStreamsInflight.get(cacheKey);
 
   const task = (async () => {
+    const started = Date.now();
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), config.easyStreamsTimeoutMs);
+    easyStreamsStats.calls += 1;
     try {
       const res = await fetch(
         `${config.easyStreamsUrl}/stream/${type}/${encodeURIComponent(id)}.json`,
         { signal: ctrl.signal, headers: { accept: 'application/json' } },
       );
-      if (!res.ok) return [];
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       const streams = (Array.isArray(body && body.streams) ? body.streams : []).filter(
         (s) => s && (s.url || s.infoHash),
       );
       easyStreamsCache.set(cacheKey, { at: Date.now(), streams });
+      easyStreamsStats.lastMs = Date.now() - started;
+      if (streams.length) easyStreamsStats.ok += 1;
+      else easyStreamsStats.empty += 1;
       return streams;
-    } catch {
+    } catch (err) {
+      easyStreamsStats.errors += 1;
+      easyStreamsStats.lastMs = Date.now() - started;
+      easyStreamsStats.lastErrorAt = Date.now();
+      easyStreamsNegCache.set(cacheKey, { at: Date.now() });
+      console.warn(
+        `[es] ${type} ${id} non disponibile dopo ${easyStreamsStats.lastMs}ms: ${
+          ctrl.signal.aborted ? 'timeout' : err.message
+        }`,
+      );
       return []; // nessuna fonte aggiuntiva: AnimeWorld basta sempre
     } finally {
       clearTimeout(timer);
@@ -133,10 +152,11 @@ async function fetchEasyStreams(type, id) {
  * Id e tipo per EasyStreams dalla richiesta. Preferisce l'imdb_id dell'anime
  * (enrich Kitsu); altrimenti l'id con prefisso Kitsu/AniList/MAL. Per le serie
  * aggiunge "stagione:episodio" (protocollo Stremio) dal numero del video.
+ * `kinfo` opzionale: se assente legge dalla cache Kitsu (peek).
  */
-function easyStreamsTarget(req, resolved, videoKey) {
+function easyStreamsTarget(req, resolved, videoKey, kinfo) {
   const type = req.params.type === 'movie' ? 'movie' : 'series';
-  const kinfo = kitsu.peek(resolved.slug) || {};
+  kinfo = kinfo || kitsu.peek(resolved.slug) || {};
   let id = /^tt\d+$/.test(String(kinfo.imdbId || '')) ? kinfo.imdbId : null;
   if (!id && /^[a-z]+:\d+$/i.test(String(kinfo.kitsuId || ''))) id = kinfo.kitsuId;
   if (!id) return null;
@@ -147,6 +167,41 @@ function easyStreamsTarget(req, resolved, videoKey) {
     id = `${id}:${ids.seasonOf(resolved.slug)}:${num}`;
   }
   return { type, id };
+}
+
+/**
+ * Id/tipo EasyStreams per lo slug risolto, arricchendo Kitsu on-demand (budget
+ * breve, come in /meta) se l'enrich non e' ancora in cache: cosi' le fonti
+ * aggiuntive compaiono anche al primo click su un episodio appena uscito.
+ */
+async function resolveEasyStreamsTarget(req, resolved, videoKey) {
+  let kinfo = kitsu.peek(resolved.slug);
+  if ((!kinfo || kitsu.needsRetry(resolved.slug)) && config.kitsuEnabled) {
+    let page = cachePeek(resolved.slug);
+    if (!page) {
+      // Episodio del catalogo con la pagina MAI fetchata (lo store lo risolve
+      // da solo): la recuperiamo ora per avere gli id MAL/AniList, sempre
+      // dentro il budget breve (la coda di sfondo la fetcha comunque a parte).
+      page = await Promise.race([
+        getAnimePage(resolved.slug, { priority: false }).catch(() => null),
+        new Promise((resolve) => setTimeout(() => resolve(META_ENRICH_WAIT), META_ENRICH_TIMEOUT_MS)),
+      ]);
+      if (page === META_ENRICH_WAIT) return null; // non blocchiamo oltre il budget
+    }
+    if (page && !page.notFound) {
+      try {
+        kinfo = await Promise.race([
+          kitsu.enrichFor(resolved.slug, page).then(() => kitsu.peek(resolved.slug)).catch(() => null),
+          new Promise((resolve) => setTimeout(() => resolve(META_ENRICH_WAIT), META_ENRICH_TIMEOUT_MS)),
+        ]);
+        if (kinfo === META_ENRICH_WAIT) kinfo = null; // l'enrich pesante prosegue in background
+      } catch (err) {
+        console.warn(`[es] kitsu non disponibile per ${resolved.slug}: ${err.message}`);
+        kinfo = null;
+      }
+    }
+  }
+  return easyStreamsTarget(req, resolved, videoKey, kinfo);
 }
 
 /**
@@ -622,16 +677,19 @@ async function handleStream(req, res) {
   }
   if (!resolved) return json(res, { streams: [] });
 
-  // Sorgente AnimeWorld e, in parallelo, fonti aggiuntive EasyStreams
-  // (se per lo slug conosciamo un id usabile). Il tempo totale e' dominato
-  // dal budget EasyStreams: lo streaming diretto AnimeWorld e' sempre pronto.
-  const es = easyStreamsTarget(req, resolved, videoKey);
+  // Sorgente AnimeWorld e, in parallelo, fonti aggiuntive EasyStreams.
+  // Il target es arricchisce Kitsu on-demand (budget breve) se serve: non si
+  // aspetta che la coda di sfondo abbia gia' coperto lo slug. Il tempo totale
+  // e' dominato dal budget EasyStreams: lo streaming diretto e' sempre pronto.
   let stream;
   let extra = [];
   try {
     const [s, e] = await Promise.all([
       getEpisodeStream(resolved.epId, { priority: true }),
-      es ? fetchEasyStreams(es.type, es.id).catch(() => []) : Promise.resolve([]),
+      (async () => {
+        const t = await resolveEasyStreamsTarget(req, resolved, videoKey);
+        return t ? fetchEasyStreams(t.type, t.id).catch(() => []) : [];
+      })(),
     ]);
     stream = s;
     extra = Array.isArray(e) ? e : [];
@@ -772,7 +830,12 @@ function health(req, res) {
     sweeper: sweep.get(),
     easyStreams:
       config.easyStreamsUrl
-        ? { enabled: true, cacheEntries: easyStreamsCache.size }
+        ? {
+            enabled: true,
+            cacheEntries: easyStreamsCache.size,
+            negCacheEntries: easyStreamsNegCache.size,
+            ...easyStreamsStats,
+          }
         : { enabled: false },
   });
 }
