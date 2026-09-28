@@ -94,6 +94,12 @@ async function main() {
   const bad = await kitsu.fetchCast(null);
   ok(bad === null, 'cast: senza anilist id -> null');
 
+  // 8) miniature episodio dall'API kitso.io (fallback quando l'addon non le da').
+  const kthumbs = await kitsu.fetchKitsuThumbs(259); // Fullmetal Alchemist
+  ok(kthumbs && kthumbs[1] && /^https?:/.test(kthumbs[1]), 'kitsu.io: thumbnail episodio 1 per FMA', String(kthumbs && kthumbs[1]).slice(0, 60));
+  const none = await kitsu.fetchKitsuThumbs(50108); // Liar Game: senz a thumbnail in kitsu
+  ok(none === null, 'kitsu.io: nessuna thumbnail senza errore');
+
   // 7) Addon raggiungibile? Se il flusso principale è fallito per problemi di rete
   //    lo segnaliamo chiaramente (il test 3 fallirebbe già, così l'errore è esplicito).
   if (!info1 && !info2) {
