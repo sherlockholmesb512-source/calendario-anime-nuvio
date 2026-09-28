@@ -36,6 +36,12 @@ app.get('/manifest.json', routes.noCache, (req, res) => {
 
 // 2) Cataloghi
 app.get(
+  '/catalog/:type/:id/:search',
+  routes.noCache,
+  routes.stripJson,
+  routes.handleCatalogSearch,
+);
+app.get(
   '/catalog/:type/:id',
   routes.noCache,
   routes.stripJson,
