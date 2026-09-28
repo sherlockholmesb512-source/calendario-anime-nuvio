@@ -19,6 +19,9 @@ const { enrichFor: kitsuEnrich } = require('./kitsu');
 const BUDGET = Number(process.env.ENRICH_BUDGET || 6);
 const EVERY_MS = Number(process.env.ENRICH_EVERY_MS || 20000);
 const MAX_QUEUE = Number(process.env.ENRICH_MAX_QUEUE || 1600);
+// Ogni slug ha al massimo questo tempo per essere arricchito: piu' di cosi'
+// fa solo perdere tempo alla coda (lo slug riprovera' a richiesta/sweep).
+const ENRICH_SLUG_TIMEOUT_MS = Number(process.env.ENRICH_SLUG_TIMEOUT_MS || 60000);
 
 const pending = [];
 const queued = new Set();
@@ -61,8 +64,15 @@ async function run(budget = BUDGET) {
         // In aggiunta alla pagina /play, chiediamo anche il riassunto Kitsu:
         // descrizione, voto, generi, art. Non deve mai rompere la coda.
         if (page && !page.notFound && config.kitsuEnabled) {
+          // Hard timeout: uno slug (es. kitso.io irraggiungibile) non deve
+          // bloccare la coda; il risultato arrivera' comunque in cache quando l
+          // chiamata sottostante terminera'.
           try {
-            await kitsuEnrich(slug, page);
+            const work = kitsuEnrich(slug, page);
+            await Promise.race([
+              work,
+              new Promise((resolve) => setTimeout(resolve, ENRICH_SLUG_TIMEOUT_MS)),
+            ]);
           } catch (err) {
             console.warn(`[enrich] kitsu fallito ${slug}: ${err.message}`);
           }
