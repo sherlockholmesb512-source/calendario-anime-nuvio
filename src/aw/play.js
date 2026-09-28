@@ -71,7 +71,7 @@ function parseSeason(text) {
  * Pagina /play/<slug> di un anime: contiene tutto (titolo, descrizione, generi,
  * anno, MAL/AniList) e la lista episodi con gli id usati dal player.
  */
-async function getAnimePage(slug, { force = false } = {}) {
+async function getAnimePage(slug, { force = false, priority = false } = {}) {
   if (!force) {
     const cached = cacheGet(pageCache, slug, config.animePageCacheMs);
     if (cached) return cached;
@@ -79,7 +79,7 @@ async function getAnimePage(slug, { force = false } = {}) {
   }
 
   const task = (async () => {
-    const res = await getHtml(`${config.awBase}/play/${slug}`);
+    const res = await getHtml(`${config.awBase}/play/${slug}`, { priority });
     if (res.notFound) {
       const missing = { slug, notFound: true, videos: [] };
       pageCache.set(slug, { at: Date.now(), data: missing });
@@ -113,8 +113,13 @@ function parseAnimePage(html, slug) {
   const posterEl = thumbRe.exec(html);
   let poster = posterEl ? absolute(posterEl[1]) : null;
   if (!poster) {
-    const ogRe = /<meta[^>]*property=["']?og:image["']?[^>]*content=["']([^"']+)["']/is.exec(html)
-      || /<meta[^>]*content=["']([^"']+\.(?:jpe?g|png|webp|avif))["'][^>]*property=["']?og:image["']?/is.exec(html);
+    // AnimeWorld pubblica la copertina in <meta name="og:image" content="...">
+    // (usa "name", non "property"): la copertina reale va presa SEMPRE da qui,
+    // con id anime corretto ed estensione giusta. Accettiamo entrambe le
+    // sintassi e qualsiasi ordine degli attributi.
+    const ogRe =
+      /<meta[^>]*(?:property|name)=["']og:image["'][^>]*content=["']([^"']+)["']/is.exec(html)
+      || /<meta[^>]*content=["']([^"']+\.(?:jpe?g|png|webp|avif))["'][^>]*(?:property|name)=["']og:image["']/is.exec(html);
     if (ogRe) poster = absolute(ogRe[1]);
   }
   if (!poster) {
@@ -214,7 +219,7 @@ function isDirectVideo(url) {
  * Risolve l'URL diretto del video per un episodio.
  * Richiede il token CSRF, che NON richiede sessione/cookie.
  */
-async function getEpisodeStream(epId, { force = false } = {}) {
+async function getEpisodeStream(epId, { force = false, priority = false } = {}) {
   if (!force) {
     const cached = cacheGet(streamCache, epId, config.streamCacheMs);
     if (cached) return cached;
@@ -224,12 +229,12 @@ async function getEpisodeStream(epId, { force = false } = {}) {
   let token = await getCsrfToken();
   let payload;
   try {
-    payload = await getJson(url, { headers: jsonHeaders(token), retries: 1 });
+    payload = await getJson(url, { headers: jsonHeaders(token), retries: 1, priority });
   } catch (err) {
     if (err.message.includes('401')) {
       invalidateCsrf();
       token = await getCsrfToken();
-      payload = await getJson(url, { headers: jsonHeaders(token), retries: 2 });
+      payload = await getJson(url, { headers: jsonHeaders(token), retries: 2, priority });
     } else {
       throw err;
     }
