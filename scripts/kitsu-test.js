@@ -100,6 +100,12 @@ async function main() {
   const none = await kitsu.fetchKitsuThumbs(50108); // Liar Game: senz a thumbnail in kitsu
   ok(none === null, 'kitsu.io: nessuna thumbnail senza errore');
 
+  // 9) miniature da metahub (stills IMDb) come ultima spiaggia.
+  const mh = await kitsu.fetchMetahubThumbs('tt0421357', 51); // Fullmetal Alchemist
+  ok(mh && mh[1] && mh[51] && /episodes\.metahub\.space/.test(mh[1]), 'metahub: thumb ep1 e ep51 per FMA', String(mh && mh[1]).slice(0, 60));
+  const mhBad = await kitsu.fetchMetahubThumbs('tt0421357', 60); // oltre l'ultimo episodio
+  ok(mhBad === null, 'metahub: niente mappa se gli estremi non esistono');
+
   // 7) Addon raggiungibile? Se il flusso principale è fallito per problemi di rete
   //    lo segnaliamo chiaramente (il test 3 fallirebbe già, così l'errore è esplicito).
   if (!info1 && !info2) {
