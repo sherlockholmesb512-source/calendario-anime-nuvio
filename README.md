@@ -55,12 +55,16 @@ HEAD (`AnimeWorld • Streaming diretto (~440 MB)`); se il probe fallisce il tit
 semplice. Niente embed o "apri sul sito": il player riproduce il file.
 
 Accanto allo stream diretto, l'addon interroga anche **EasyStreams**
-(`https://easystreams.realbestia.com`, addon solo-stream italiano di terze parti) e
-restituisce in più le fonti che trova (torrent/http), usando l'id IMDb o Kitsu
-dell'anime e il formato `id:stagione:episodio` del protocollo Stremio. EasyStreams è
-lento e variabile (1-12 s): la risposta attende al massimo `EASYSTREAMS_TIMEOUT_MS`
-(default 10 s) e poi replica con il solo stream AnimeWorld; il risultato è in cache
-10 minuti. `EASYSTREAMS_URL=''` disattiva questa integrazione (di default è attiva).
+(`https://easystreams.realbestia.com/nuvio/manifest.json`, plugin Nuvio solo-stream di
+terze parti, senza cataloghi né ricerca) e restituisce in più le fonti che trova
+(torrent/http), usando l'id IMDb o Kitsu dell'anime e il formato `id:stagione:episodio`
+del protocollo Stremio. EasyStreams è lento e variabile (1-30 s, code lato provider): la
+risposta attende al massimo `EASYSTREAMS_TIMEOUT_MS` (default 15 s) e poi replica con il
+solo stream AnimeWorld; il risultato è in cache 10 minuti e gli insuccessi non vengono
+ritentati subito (cache negativa breve). L'id per EasyStreams viene ricavato al primo
+click (arricchimento Kitsu on-demand a budget breve), quindi le fonti aggiuntive
+compaiono anche senza aver mai aperto la scheda. `EASYSTREAMS_URL=''` disattiva
+l'integrazione (di default è attiva).
 
 Le *informazioni* (trama, voto IMDb, generi, art) arrivano dall'addon di terze parti
 **Kitsu** (`https://anime-kitsu.strem.fun`): il match sfrutta gli id MyAnimeList/AniList che
@@ -175,9 +179,9 @@ Variabili d'ambiente disponibili: vedi `.env.example`. Le principali sono
 scheda risponde subito con la trama AnimeWorld e l'arricchimento prosegue in
 background), `TMDB_API_KEY` (miniature episodio affidabili da TMDB quando
 l'addon e kitso.io non coprono il titolo; da impostare nel pannello Render),
-`EASYSTREAMS_URL` (addon stream aggiuntivo; `''` per disattivare, di default
-usa il manifest di easystreams.realbestia.com) e `EASYSTREAMS_TIMEOUT_MS`
-(default 10 s).
+`EASYSTREAMS_URL` (plugin stream aggiuntivo; `''` per disattivare, di default
+`https://easystreams.realbestia.com/nuvio`), `EASYSTREAMS_TIMEOUT_MS`
+(default 15 s) e `EASYSTREAMS_NEG_CACHE_MS` (default 2 minuti).
 
 ---
 
