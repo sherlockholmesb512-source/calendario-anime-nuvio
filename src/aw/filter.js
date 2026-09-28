@@ -73,4 +73,30 @@ async function getCatalogByFilter(urlBuilder, pages) {
 const getItalianMovies = () => getCatalogByFilter(moviesUrl, config.movieFilterPages);
 const getItalianDubbed = () => getCatalogByFilter(dubbedUrl, config.dubFilterPages);
 
-module.exports = { getItalianMovies, getItalianDubbed, getFilterPage, moviesUrl, dubbedUrl, toText };
+// ---------------------------------------------------------------------------
+// Ricerca (/search?keyword=...): la pagina dei risultati usa la stessa
+// struttura "film-list" delle pagine /filter, quindi riusiamo il parser.
+// ---------------------------------------------------------------------------
+
+function searchUrl(query) {
+  return `${config.awBase}/search?keyword=${encodeURIComponent(String(query || '').trim())}`;
+}
+
+/** Risultati di ricerca AnimeWorld, massimo `limit` card, senza duplicati. */
+async function getSearchItems(query, limit = 30) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const items = await getFilterPage(searchUrl(q));
+  return items.slice(0, limit);
+}
+
+module.exports = {
+  getItalianMovies,
+  getItalianDubbed,
+  getFilterPage,
+  getSearchItems,
+  moviesUrl,
+  dubbedUrl,
+  searchUrl,
+  toText,
+};
