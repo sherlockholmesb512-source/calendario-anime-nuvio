@@ -57,6 +57,12 @@ const copertine = (slug) => {
   return /^[A-Za-z0-9_-]{1,32}$/.test(id) ? `https://img.animeworld.ac/copertine/${id}.jpg` : null;
 };
 
+// Budget breve per l'arricchimento Kitsu on-demand nella richiesta /meta:
+// se non conclude entro questo tempo la scheda risponde con i soli dati
+// AnimeWorld (trama inclusa) e l'enrich pesante prosegue in background.
+const META_ENRICH_TIMEOUT_MS = config.metaEnrichTimeoutMs > 0 ? config.metaEnrichTimeoutMs : 5000;
+const META_ENRICH_WAIT = Symbol('meta-enrich-wait');
+
 function paginate(items, skip, limit) {
   const from = Math.max(0, Number(skip) || 0);
   const size = Math.min(Math.max(Number(limit) || config.pageSize, 1), 1200);
@@ -79,7 +85,10 @@ function lightMeta(slug, fallbackName, fallbackPoster) {
     const merged = kitsu.mergeWithPage(page, kitsu.peek(slug));
     return {
       name: page.title || fallbackName,
-      poster: (merged && merged.poster) || page.poster || copertine(slug) || fallbackPoster,
+      // Il poster scrapato (fallbackPoster/item.poster) e' un URL reale preso
+      // dalla pagina AnimeWorld: ha la priorita' sulla copertina "costruita"
+      // dall'id dello slug (che puo' non esistere su img.animeworld.ac).
+      poster: (merged && merged.poster) || page.poster || fallbackPoster || copertine(slug),
       description: (merged && merged.description) || page.description,
       genres: (merged && merged.genres) || page.genres,
       year: (merged && merged.year) || page.year,
@@ -224,7 +233,9 @@ function handleCatalog(req, res) {
 
 async function buildMeta(slug, type, num, baseId) {
   // Bloccante di proposito: una richiesta per clic utente, con cache 6 ore.
-  const page = await getAnimePage(slug);
+  // Corsia prioritaria: se la pagina non e' ancora in cache non deve aspettare
+  // dietro ai fetch di sfondo della coda enrich.
+  const page = await getAnimePage(slug, { priority: true });
 
   if (!page || page.notFound) {
     return {
@@ -238,12 +249,19 @@ async function buildMeta(slug, type, num, baseId) {
   }
 
   // Kitsu: se gia' arricchito in background lo usiamo; altrimenti (deep link,
-  // slug mai passato dalla coda) lo chiediamo qui, una sola volta per slug.
-  // Le voci "parziali" scadute vengono ritentate per far arrivare le thumbnail.
+  // slug mai passato dalla coda) lo chiediamo qui ma SOLO entro un budget breve:
+  // la trama AnimeWorld deve tornare subito (prima era cosi'), l'arricchimento
+  // pesante (addon + kitso.io + metahub) continua in background con la coda.
   let kinfo = kitsu.peek(slug);
   if ((!kinfo || kitsu.needsRetry(slug)) && config.kitsuEnabled) {
     try {
-      kinfo = await kitsu.enrichFor(slug, page);
+      kinfo = await Promise.race([
+        kitsu.enrichFor(slug, page),
+        new Promise((resolve) => setTimeout(() => resolve(META_ENRICH_WAIT), META_ENRICH_TIMEOUT_MS)),
+      ]);
+      if (kinfo === META_ENRICH_WAIT) {
+        kinfo = null; // non blocchiamo la scheda: i dati AnimeWorld bastano
+      }
     } catch (err) {
       console.warn(`[meta] kitsu non disponibile per ${slug}: ${err.message}`);
     }
@@ -351,7 +369,7 @@ async function resolveEpisodeId(videoKey) {
     // Se l'episodio e' gia' in uno dei due cataloghi episodic, non serve nulla.
     const hit = lookupEpisode(ids.videoId(v.num, v.slug));
     if (hit && hit.epId) return { epId: hit.epId, slug: v.slug };
-    const page = await getAnimePage(v.slug);
+    const page = await getAnimePage(v.slug, { priority: true });
     if (!page || page.notFound) return null;
     const list = page.videos || [];
     const found = list.find((e) => e.num === v.num) || list[list.length - 1];
@@ -360,7 +378,7 @@ async function resolveEpisodeId(videoKey) {
 
   const a = ids.parseAnime(videoKey);
   if (a) {
-    const page = await getAnimePage(a.slug);
+    const page = await getAnimePage(a.slug, { priority: true });
     const list = (page && page.videos) || [];
     return list.length ? { epId: list[list.length - 1].id, slug: a.slug } : null;
   }
@@ -369,7 +387,7 @@ async function resolveEpisodeId(videoKey) {
   if (m) {
     const hit = lookupEpisode(ids.videoId(m.num, m.slug));
     if (hit && hit.epId) return { epId: hit.epId, slug: m.slug };
-    const page = await getAnimePage(m.slug);
+    const page = await getAnimePage(m.slug, { priority: true });
     const list = (page && page.videos) || [];
     const found = list.find((e) => e.num === m.num) || list[list.length - 1];
     return found ? { epId: found.id, slug: m.slug } : null;
@@ -393,7 +411,7 @@ async function handleStream(req, res) {
 
   let stream;
   try {
-    stream = await getEpisodeStream(resolved.epId);
+    stream = await getEpisodeStream(resolved.epId, { priority: true });
   } catch (err) {
     console.warn(`[stream] errore sorgente per ${resolved.epId}: ${err.message}`);
     return json(res, { streams: [] });
