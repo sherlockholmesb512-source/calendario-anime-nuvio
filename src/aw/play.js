@@ -299,8 +299,34 @@ async function getEpisodeStream(epId, { force = false, priority = false } = {}) 
       ? `${config.awBase}${payload.target}`
       : null,
   };
+  // AnimeWorld espone una sola sorgente (MP4 diretto) senza etichette di
+  // qualita': il dato reale e' la DIMENSIONE del file, utile a Nuvio per
+  // mostrare il peso dello stream. HEAD leggero, senza download.
+  if (direct) {
+    try {
+      data.size = await probeSize(direct);
+    } catch {
+      // senza dimensione lo stream resta comunque valido
+    }
+  }
   streamCache.set(epId, { at: Date.now(), data });
   return data;
+}
+
+/** Dimensione in byte del video via HEAD (timeout breve, nessun download). */
+async function probeSize(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal });
+    if (!res.ok) return null;
+    const bytes = Number(res.headers.get('content-length'));
+    return Number.isFinite(bytes) && bytes > 0 ? bytes : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 module.exports = {
