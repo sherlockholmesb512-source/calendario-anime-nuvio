@@ -61,6 +61,12 @@ vengono svuotate automaticamente: pagine `/play`, stream risolti e metadati Kits
 accumula, lo spazio resta libero e i dati si ri-scaricano freschi (le schede vengono
 ri-accodate e si ri-arricchiscono in background).
 
+Il **cast** (attori e doppiatori) arriva da **AniList GraphQL** (dati pubblici, nessuna chiave):
+per ogni anime si preferiscono i **doppiatori italiani**, senza di loro i seiyuu giapponesi,
+in ultima spiaggia i personaggi principali; `CAST_ENABLED=false` lo disattiva. Le miniature
+degli episodi e i poster non restano mai vuoti: in mancanza del dato arricchito si usa la
+copertina AnimeWorld costruita dall'id dell'opera (`img.animeworld.ac/copertine/<id>.jpg`).
+
 ### Flusso dati
 
 ```
