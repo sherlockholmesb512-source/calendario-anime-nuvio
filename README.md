@@ -12,6 +12,9 @@ che raccoglie i dati di **AnimeWorld** in 4 cataloghi, aggiornati automaticament
 
 I quattro cataloghi sono dichiarati di tipo **`anime`**, così Nuvio li raccoglie nella
 sezione **Anime** di Cerca → Scopri (le schede Home diventano "… · Anime").
+**Supportano la ricerca** (`extra: search`): la lente di Nuvio interroga AnimeWorld
+(ricerca per titolo) filtrata dal catalogo in cui stai cercando, così trovi un episodio
+in "Ultimi Episodi", un film in "Movie Italiani" e solo doppiati in "Doppiati in Italiano".
 Attenzione: è il *catalogo* ad essere di tipo `anime`, mentre i singoli elementi
 restano di tipo `series` o `movie`: in Nuvio è il tipo dell'elemento a decidere se
 mostrare episodi, "Continua a guardare" e il pannello episodi, e `anime` non
@@ -45,8 +48,19 @@ Il sito non espone alcuna API pubblica, quindi tutto viene ricavato leggendo l'H
 chiamando l'endpoint interno del player, `GET /api/episode/info?id=<epId>&alt=0`, che restituisce
 l'URL MP4 diretto: serve l'header `CSRF-Token` ma **non** richiede cookie né sessione.
 
-Per ogni episodio (o film) l'addon espone **un unico stream**: lo streaming diretto di
-AnimeWorld (`https://…/…mp4`). Niente embed o "apri sul sito": il player riproduce il file.
+Per ogni episodio (o film) l'addon espone **lo streaming diretto di AnimeWorld**
+(`https://…/…mp4`). AnimeWorld non espone etichette di qualità (singolo MP4), quindi il
+titolo dello stream mostra la **dimensione reale del file** misurata con una richiesta
+HEAD (`AnimeWorld • Streaming diretto (~440 MB)`); se il probe fallisce il titolo resta
+semplice. Niente embed o "apri sul sito": il player riproduce il file.
+
+Accanto allo stream diretto, l'addon interroga anche **EasyStreams**
+(`https://easystreams.realbestia.com`, addon solo-stream italiano di terze parti) e
+restituisce in più le fonti che trova (torrent/http), usando l'id IMDb o Kitsu
+dell'anime e il formato `id:stagione:episodio` del protocollo Stremio. EasyStreams è
+lento e variabile (1-12 s): la risposta attende al massimo `EASYSTREAMS_TIMEOUT_MS`
+(default 10 s) e poi replica con il solo stream AnimeWorld; il risultato è in cache
+10 minuti. `EASYSTREAMS_URL=''` disattiva questa integrazione (di default è attiva).
 
 Le *informazioni* (trama, voto IMDb, generi, art) arrivano dall'addon di terze parti
 **Kitsu** (`https://anime-kitsu.strem.fun`): il match sfrutta gli id MyAnimeList/AniList che
@@ -159,8 +173,11 @@ Variabili d'ambiente disponibili: vedi `.env.example`. Le principali sono
 `REFRESH_MS` (default 5 minuti), `INCLUDE_INDETERMINATE` (vedi sotto),
 `META_ENRICH_TIMEOUT_MS` (budget per le richieste /meta: oltre il tempo la
 scheda risponde subito con la trama AnimeWorld e l'arricchimento prosegue in
-background) e `TMDB_API_KEY` (miniature episodio affidabili da TMDB quando
-l'addon e kitso.io non coprono il titolo; da impostare nel pannello Render).
+background), `TMDB_API_KEY` (miniature episodio affidabili da TMDB quando
+l'addon e kitso.io non coprono il titolo; da impostare nel pannello Render),
+`EASYSTREAMS_URL` (addon stream aggiuntivo; `''` per disattivare, di default
+usa il manifest di easystreams.realbestia.com) e `EASYSTREAMS_TIMEOUT_MS`
+(default 10 s).
 
 ---
 
