@@ -72,10 +72,10 @@ const yearOf = (v) => {
   return m ? Number(m[1]) : null;
 };
 
-async function requestJson(url, init = {}, tries = 2) {
+async function requestJson(url, init = {}, tries = 2, timeoutMs = TIMEOUT) {
   for (let i = 0; i < tries; i += 1) {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), TIMEOUT);
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await fetch(url, { ...init, signal: ctrl.signal });
       if (!res.ok) continue; // retry
@@ -126,18 +126,32 @@ async function summarizeMeta(m) {
     episodeThumbs[thumbIndex] = v.thumbnail;
     if (thumbIndex >= 1000) break;
   }
-  if (!Object.keys(episodeThumbs).length && m.id) {
+  let hasThumbs = Object.keys(episodeThumbs).length > 0;
+  const imdbId = m.imdb_id || null;
+  // 2) API pubblica kitso.io: miniature ufficiali per numero relativo.
+  if (!hasThumbs && m.id) {
     const direct = await fetchKitsuThumbs(m.id);
     if (direct) {
       for (const [n, url] of Object.entries(direct)) {
         if (Number(n) >= 1 && Number(n) <= 1000) episodeThumbs[Number(n)] = url;
       }
+      hasThumbs = Object.keys(episodeThumbs).length > 0;
+    }
+  }
+  // 3) metahub (stills IMDb) costruito dall'imdb_id: solo per serie a stagione
+  //    unica e solo se ep1 ed epN risultano davvero esistenti (niente immagini
+  //    rotte per titoli che metahub non copre).
+  if (!hasThumbs && imdbId && m.type !== 'movie' && totalEpisodes) {
+    const mh = await fetchMetahubThumbs(imdbId, totalEpisodes);
+    if (mh) {
+      for (const [n, url] of Object.entries(mh)) episodeThumbs[Number(n)] = url;
+      hasThumbs = true;
     }
   }
 
   return {
     kitsuId: m.id || null,
-    imdbId: m.imdb_id || null,
+    imdbId,
     name: m.name || null,
     aliases: Array.isArray(m.aliases) ? m.aliases : [],
     description: String(m.description || '')
@@ -168,8 +182,8 @@ async function fetchKitsuThumbs(kitsuId) {
   let url = `${config.kitsuApiBase}/anime/${raw}/episodes?page%5Blimit%5D=20`;
   const thumbs = {};
   let pages = 0;
-  while (url && pages < 50) {
-    const body = await requestJson(url);
+  while (url && pages < 15) {
+    const body = await requestJson(url, {}, 1, 12000);
     if (!body || !Array.isArray(body.data)) break;
     const seen = new Set();
     for (const e of body.data) {
@@ -185,6 +199,40 @@ async function fetchKitsuThumbs(kitsuId) {
     pages += 1;
   }
   return Object.keys(thumbs).length ? thumbs : null;
+}
+
+// ---------------------------------------------------------------------------
+// Thumbnail episodi da metahub (stills IMDb) come ultima spiaggia: l'immagine
+// viene servita al client, quindi non dipende dalla raggiungibilita' di servizi
+// esterni da parte di Render. Prima di fidarsi verifichiamo ep1 ed epN.
+// ---------------------------------------------------------------------------
+
+const METAHUB = 'https://episodes.metahub.space';
+
+async function fetchMetahubThumbs(imdbId, count) {
+  const num = Number(count);
+  if (!imdbId || !Number.isFinite(num) || num < 1 || num > 300) return null;
+  const exists = async (n) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const res = await fetch(`${METAHUB}/${imdbId}/1/${n}/w780.jpg`, {
+        method: 'HEAD',
+        signal: ctrl.signal,
+      });
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  if (!(await exists(1)) || !(await exists(num))) return null;
+  const thumbs = {};
+  for (let n = 1; n <= num; n += 1) {
+    thumbs[n] = `${METAHUB}/${imdbId}/1/${n}/w780.jpg`;
+  }
+  return thumbs;
 }
 
 function getMetaById(id) {
@@ -466,4 +514,4 @@ function flush() {
   return n;
 }
 
-module.exports = { enrichFor, peek, needsRetry, mergeWithPage, normalizeTitle, pickBestMatch, stats, flush, fetchCast, fetchKitsuThumbs };
+module.exports = { enrichFor, peek, needsRetry, mergeWithPage, normalizeTitle, pickBestMatch, stats, flush, fetchCast, fetchKitsuThumbs, fetchMetahubThumbs };
