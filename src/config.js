@@ -75,16 +75,20 @@ module.exports = {
   // Fonti stream AGGIUNTIVE da EasyStreams (addon solo-stream italiano di
   // terze parti): accanto allo streaming diretto AnimeWorld, ogni episodio
   // espone anche i flussi risolti da EasyStreams (torrent/http). Imposta
-  // EASYSTREAMS_URL='' per disattivare; di default usa il manifest di terze
-  // parti. Il suffisso "id:stagione:episodio" segue il protocollo Stremio.
+  // EASYSTREAMS_URL='' per disattivare; di default usa il plugin Nuvio
+  // (https://easystreams.realbestia.com/nuvio/manifest.json), che risponde
+  // anche alle rotte /stream Stremio. Il suffisso "id:stagione:episodio"
+  // segue il protocollo Stremio.
   easyStreamsUrl:
     process.env.EASYSTREAMS_URL === undefined
-      ? 'https://easystreams.realbestia.com/eyJzdHJlYW1QcmVmZXJlbmNlIjoiaHR0cCIsImRpc2FibGVkUHJvdmlkZXJzIjoiIn0'
+      ? 'https://easystreams.realbestia.com/nuvio'
       : (process.env.EASYSTREAMS_URL || ''),
-  // EasyStreams e' lento e variabile (1-12 s): risposta limitata a questo budget,
-  // poi si replica con il solo stream AnimeWorld. La risposta e' in cache 10 minuti.
-  easyStreamsTimeoutMs: Number(process.env.EASYSTREAMS_TIMEOUT_MS || 10000),
+  // EasyStreams e' lento e variabile (1-30 s, code lato provider): risposta
+  // limitata a questo budget, poi si replica con il solo stream AnimeWorld.
+  // Dopo un insuccesso non si rigira a ogni click (cache negativa breve).
+  easyStreamsTimeoutMs: Number(process.env.EASYSTREAMS_TIMEOUT_MS || 15000),
   easyStreamsTtlMs: Number(process.env.EASYSTREAMS_CACHE_MS || minutes(10)),
+  easyStreamsNegTtlMs: Number(process.env.EASYSTREAMS_NEG_CACHE_MS || minutes(2)),
 
   // Nella richiesta /meta il budget massimo per l'arricchimento Kitsu on-demand:
   // oltre questo tempo la scheda risponde subito con i soli dati AnimeWorld
