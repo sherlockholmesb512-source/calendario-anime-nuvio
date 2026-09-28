@@ -106,15 +106,23 @@ function parseAnimePage(html, slug) {
   const descEl = /<div class="desc">([\s\S]*?)<\/div>/i.exec(html);
   const description = descEl ? toText(descEl[1]) : '';
 
-  const posterEl = /<img[^>]*id="(?:mobile-)?thumbnail-watch"[^>]*src="([^"]+)"/i.exec(html);
+  // Copertina: il tag principale usa a volte data-src (lazy-load); in assenza si
+  // cerca l'og:image; l'ultima spiaggia e' la copertina costruita dall'id.
+  const thumbRe =
+    /<img[^>]*id="(?:mobile-)?thumbnail-watch"[^>]*(?:src|data-src)="([^"]+)"/i;
+  const posterEl = thumbRe.exec(html);
   let poster = posterEl ? absolute(posterEl[1]) : null;
   if (!poster) {
-    const alt = /<img[^>]*alt="([^"]*)"[^>]*id="(?:mobile-)?thumbnail-watch"/i.exec(html);
-    if (alt) poster = null;
+    const ogRe = /<meta[^>]*property=["']?og:image["']?[^>]*content=["']([^"']+)["']/is.exec(html)
+      || /<meta[^>]*content=["']([^"']+\.(?:jpe?g|png|webp|avif))["'][^>]*property=["']?og:image["']?/is.exec(html);
+    if (ogRe) poster = absolute(ogRe[1]);
   }
   if (!poster) {
-    const any = /<img[^>]*id="mobile-thumbnail-watch"[^>]*src="([^"]+)"/i.exec(html);
-    if (any) poster = absolute(any[1]);
+    const parts = String(slug || '').split('.');
+    const animeId = (parts[parts.length - 1] || '').trim();
+    if (/^[A-Za-z0-9_-]{1,32}$/.test(animeId)) {
+      poster = `https://img.animeworld.ac/copertine/${animeId}.jpg`;
+    }
   }
 
   // Blocchi <dl class="meta col-sm-6">: Categoria / Audio / Data / Stagione / Studio / Genere
