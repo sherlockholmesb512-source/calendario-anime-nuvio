@@ -45,7 +45,7 @@ const trim = (map, cap) => {
   }
 };
 
-const fresh = (entry, now = Date.now()) => Boolean(entry) && now - entry.at < TTL;
+const fresh = (entry, now = Date.now()) => Boolean(entry) && now - entry.at < (entry.ttl || TTL);
 
 // Un fallimento di rete/addon viene dimenticato dopo 5 minuti, cosi' una
 // richiesta utente non s'inceppa ripetutamente su un addon irraggiungibile.
@@ -97,7 +97,7 @@ async function requestJson(url, init = {}, tries = 2) {
 const fetchJson = (url) => requestJson(url);
 
 /** Riduce il meta Kitsu ai campi che ci servono (via video, li teniamo noi). */
-function summarizeMeta(m) {
+async function summarizeMeta(m) {
   let totalEpisodes = null;
   const vids = Array.isArray(m.videos) ? m.videos : [];
   if (m.type === 'movie') {
@@ -111,8 +111,13 @@ function summarizeMeta(m) {
     }
   }
   const rating = Number.parseFloat(String(m.imdbRating || '').replace(',', '.'));
-  // Miniatura del singolo episodio (source metahub/IMDb via addon Kitsu), in
-  // ordine di episodio. Fallback per la scheda: copertina dell'anime.
+
+  // Miniatura del singolo episodio, in ordine di episodio. Fonte primaria: i
+  // video dell'addon Kitsu (media.kitsu.app o metahub, gia' pronti all'uso).
+  // Se l'addon non ne fornisce (es. cache edge diversa per regione) si passa
+  // all'API pubblica kitso.io, che espone le thumbnails ufficiali con il numero
+  // relativo (per le serie multistagione i numeri ricominciano dalla stagione 2:
+  // l'episodio vincente resta il numero "relativo" della ripartenza).
   const episodeThumbs = {};
   let thumbIndex = 0;
   for (const v of vids) {
@@ -121,8 +126,18 @@ function summarizeMeta(m) {
     episodeThumbs[thumbIndex] = v.thumbnail;
     if (thumbIndex >= 1000) break;
   }
+  if (!Object.keys(episodeThumbs).length && m.id) {
+    const direct = await fetchKitsuThumbs(m.id);
+    if (direct) {
+      for (const [n, url] of Object.entries(direct)) {
+        if (Number(n) >= 1 && Number(n) <= 1000) episodeThumbs[Number(n)] = url;
+      }
+    }
+  }
+
   return {
     kitsuId: m.id || null,
+    imdbId: m.imdb_id || null,
     name: m.name || null,
     aliases: Array.isArray(m.aliases) ? m.aliases : [],
     description: String(m.description || '')
@@ -141,6 +156,37 @@ function summarizeMeta(m) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Thumbnail episodi dall'API pubblica kitso.io (fallback quando l'addon non le
+// fornisce). Nessuna chiave richiesta; paginazione su links.next fino a 12 pag.
+// ---------------------------------------------------------------------------
+
+async function fetchKitsuThumbs(kitsuId) {
+  if (!config.kitsuApiBase) return null;
+  const raw = String(kitsuId || '').replace(/^kitsu:/i, '');
+  if (!/^\d+$/.test(raw)) return null;
+  let url = `${config.kitsuApiBase}/anime/${raw}/episodes?page%5Blimit%5D=20`;
+  const thumbs = {};
+  let pages = 0;
+  while (url && pages < 50) {
+    const body = await requestJson(url);
+    if (!body || !Array.isArray(body.data)) break;
+    const seen = new Set();
+    for (const e of body.data) {
+      const a = (e && e.attributes) || {};
+      const tn = (a.thumbnail && (a.thumbnail.original || a.thumbnail)) || null;
+      const n = Number(a.relativeNumber != null ? a.relativeNumber : a.number);
+      if (typeof tn === 'string' && tn && Number.isFinite(n) && n >= 1 && n <= 1000 && !seen.has(n)) {
+        seen.add(n);
+        thumbs[n] = tn;
+      }
+    }
+    url = (body.links && body.links.next) || null;
+    pages += 1;
+  }
+  return Object.keys(thumbs).length ? thumbs : null;
+}
+
 function getMetaById(id) {
   const cached = metaCache.get(id);
   if (fresh(cached)) return Promise.resolve(cached.summary);
@@ -150,10 +196,16 @@ function getMetaById(id) {
     const body = await fetchJson(`${BASE}/meta/anime/${id}.json`);
     const m = body && body.meta;
     if (!m) return null;
-    const summary = summarizeMeta(m);
+    const summary = await summarizeMeta(m);
     const now = Date.now();
-    metaCache.set(id, { at: now, summary });
-    if (m.id && m.id !== id) metaCache.set(m.id, { at: now, summary });
+    // Se la risposta e' arrivata senza miniature episodio (succede quando la
+    // cache edge dell'addon serve una copia vecchia), la riconsideriamo presto
+    // invece di tenerla 24 h: cosi' le thumbnail si auto-riparano.
+    const hasVids = Array.isArray(m.videos) && m.videos.length > 0;
+    const slim = hasVids && !summary.episodeThumbs;
+    const ttl = slim ? NEG_TTL : TTL;
+    metaCache.set(id, { at: now, summary, ttl });
+    if (m.id && m.id !== id) metaCache.set(m.id, { at: now, summary, ttl });
     trim(metaCache, META_CAP);
     return summary;
   })().finally(() => inflight.delete(id));
@@ -301,7 +353,11 @@ async function enrichFor(slug, page) {
   if (!config.kitsuEnabled && !config.castEnabled) return null;
   if (!slug || !page || page.notFound) return null;
   const cached = slugInfo.get(slug);
-  if (fresh(cached)) return cached.info;
+  if (fresh(cached)) {
+    // Una voce "parziale" (cast arrivato, meta Kitsu no) viene ritentata dopo
+    // NEG_TTL: non deve congelare la scheda senza Kitsu per 24 h.
+    if (!cached.partial || Date.now() < (cached.retryAt || 0)) return cached.info;
+  }
   const failedAt = failMark.get(slug);
   if (failedAt && Date.now() - failedAt < NEG_TTL) return null;
 
@@ -338,7 +394,13 @@ async function enrichFor(slug, page) {
   const info = meta
     ? { ...meta, sourceTitle: page.title || null, cast }
     : { sourceTitle: page.title || null, cast };
-  slugInfo.set(slug, { at: Date.now(), info });
+  const partial = !meta;
+  slugInfo.set(slug, {
+    at: Date.now(),
+    info,
+    partial,
+    retryAt: partial ? Date.now() + NEG_TTL : 0,
+  });
   trim(slugInfo, SLUG_CAP);
   return info;
 }
@@ -347,6 +409,15 @@ async function enrichFor(slug, page) {
 function peek(slug) {
   const cached = slugInfo.get(slug);
   return fresh(cached) ? cached.info : null;
+}
+
+/**
+ * Dice se la voce in cache e' "parziale" (cast senza meta Kitsu) e oltre il
+ * tempo di retry: in quel caso la scheda va ri-arricchita a richiesta.
+ */
+function needsRetry(slug) {
+  const cached = slugInfo.get(slug);
+  return Boolean(cached && cached.partial && Date.now() >= (cached.retryAt || 0));
 }
 
 /**
@@ -395,4 +466,4 @@ function flush() {
   return n;
 }
 
-module.exports = { enrichFor, peek, mergeWithPage, normalizeTitle, pickBestMatch, stats, flush, fetchCast };
+module.exports = { enrichFor, peek, needsRetry, mergeWithPage, normalizeTitle, pickBestMatch, stats, flush, fetchCast, fetchKitsuThumbs };
