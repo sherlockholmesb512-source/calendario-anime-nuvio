@@ -138,7 +138,16 @@ async function summarizeMeta(m) {
       hasThumbs = Object.keys(episodeThumbs).length > 0;
     }
   }
-  // 3) metahub (stills IMDb) costruito dall'imdb_id: solo per serie a stagione
+  // 3) TMDB: still ufficiali per episodio (imdb_id + chiave API). Affidabile
+  //    anche da Render; quando colpisce la serie giusta, copre tutta la S1.
+  if (!hasThumbs && imdbId && m.type !== 'movie') {
+    const tm = await fetchTmdbThumbs(imdbId);
+    if (tm) {
+      for (const [n, url] of Object.entries(tm)) episodeThumbs[Number(n)] = url;
+      hasThumbs = true;
+    }
+  }
+  // 4) metahub (stills IMDb) costruito dall'imdb_id: solo per serie a stagione
   //    unica e solo se ep1 ed epN risultano davvero esistenti (niente immagini
   //    rotte per titoli che metahub non copre).
   if (!hasThumbs && imdbId && m.type !== 'movie' && totalEpisodes) {
@@ -233,6 +242,63 @@ async function fetchMetahubThumbs(imdbId, count) {
     thumbs[n] = `${METAHUB}/${imdbId}/1/${n}/w780.jpg`;
   }
   return thumbs;
+}
+
+// ---------------------------------------------------------------------------
+// Thumbnail episodi da TMDB (still ufficiali per episodio, chiave API da env):
+// una sola chiamata /find (per imdb_id) + una sola /season/1 restituisce gli
+// still di TUTTA la stagione. Raggiungibile da Render (a differenza di kitso.io)
+// e con chiave dedicata: prezioso quando l'addon e kitso.io non danno nulla.
+// ---------------------------------------------------------------------------
+
+const TMDB = 'https://api.themoviedb.org/3';
+const TMDB_IMG = 'https://image.tmdb.org/t/p/w780';
+
+const tmdbCache = new Map(); // imdbId -> { at, thumbs }
+
+async function fetchTmdbThumbs(imdbId) {
+  const key = config.tmdbApiKey;
+  const imdb = String(imdbId || '').trim();
+  if (!key || !/^tt\d+$/.test(imdb)) return null;
+  const hit = tmdbCache.get(imdb);
+  if (fresh(hit)) return hit.thumbs;
+
+  try {
+    // 1) Trova la serie con questo imdb_id.
+    const find = await requestJson(
+      `${TMDB}/find/${encodeURIComponent(imdb)}?api_key=${encodeURIComponent(key)}&external_source=imdb_id&language=it-IT`,
+      {},
+      2,
+      12000,
+    );
+    const tv = find && find.tv_results && find.tv_results[0];
+    if (!tv || !tv.id) return null;
+
+    // 2) Stagione 1: tutti gli episodi con still in UNA richiesta.
+    const season = await requestJson(
+      `${TMDB}/tv/${tv.id}/season/1?api_key=${encodeURIComponent(key)}&language=it-IT`,
+      {},
+      2,
+      12000,
+    );
+    if (!season || !Array.isArray(season.episodes)) return null;
+    const thumbs = {};
+    for (const e of season.episodes) {
+      const n = Number(e && e.episode_number);
+      if (e && typeof e.still_path === 'string' && e.still_path && Number.isFinite(n) && n >= 1) {
+        thumbs[n] = `${TMDB_IMG}${e.still_path}`;
+      }
+    }
+    const result = Object.keys(thumbs).length ? thumbs : null;
+    tmdbCache.set(imdb, { at: Date.now(), thumbs: result, ttl: TTL });
+    if (tmdbCache.size > 600) {
+      const first = tmdbCache.keys().next().value;
+      if (first !== undefined) tmdbCache.delete(first);
+    }
+    return result;
+  } catch {
+    return null;
+  }
 }
 
 function getMetaById(id) {
@@ -514,4 +580,4 @@ function flush() {
   return n;
 }
 
-module.exports = { enrichFor, peek, needsRetry, mergeWithPage, normalizeTitle, pickBestMatch, stats, flush, fetchCast, fetchKitsuThumbs, fetchMetahubThumbs };
+module.exports = { enrichFor, peek, needsRetry, mergeWithPage, normalizeTitle, pickBestMatch, stats, flush, fetchCast, fetchKitsuThumbs, fetchMetahubThumbs, fetchTmdbThumbs };
