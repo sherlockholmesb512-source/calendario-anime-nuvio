@@ -23,7 +23,7 @@ const SLUGS = [
       ).text();
       const parsed = parseAnimePage(html, slug);
       const poster = parsed.poster || '';
-      // verifica che l'immagine esista davvero
+      // verifica che l'immagine esista davvero e che sia VERTICALE (locandina)
       let code = 'n/a';
       try {
         const r = await fetch(poster, { method: 'HEAD' });
@@ -31,9 +31,10 @@ const SLUGS = [
       } catch {
         code = 'ERR';
       }
-      const good = code === 200;
+      const vertical = /\/locandine\//i.test(poster);
+      const good = code === 200 && vertical;
       if (good) ok++;
-      console.log(`${good ? 'OK ' : 'NO '} ${slug.padEnd(36)} -> ${poster}  [${code}]`);
+      console.log(`${good ? 'OK ' : 'NO '} ${slug.padEnd(36)} -> ${poster}  [${code}] verticale=${vertical}`);
     } catch (err) {
       console.log(`ERR ${slug}: ${err.message}`);
     }
