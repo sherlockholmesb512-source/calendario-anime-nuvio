@@ -11,6 +11,31 @@ const sweep = require('./sweep');
 
 const { state, lookupEpisode } = store;
 
+// Cache della risposta /meta (in memoria, TTL breve): reduce le richieste
+// ripetute di Nuvio/desktop verso buildMeta (pagina + peek + eventuale TMDB).
+// Bastano 10-15 min: i dati si aggiornano comunque al massimo con quel ritardo.
+const META_CACHE_TTL_MS = Number(process.env.META_CACHE_MS || 10 * 60 * 1000);
+const META_CACHE_CAP = 2500;
+const metaCache = new Map(); // id|tipo -> { at, body }
+
+function metaCacheGet(key) {
+  const hit = metaCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > META_CACHE_TTL_MS) {
+    metaCache.delete(key);
+    return null;
+  }
+  return hit.body;
+}
+
+function metaCacheSet(key, body) {
+  metaCache.set(key, { at: Date.now(), body });
+  if (metaCache.size > META_CACHE_CAP) {
+    const first = metaCache.keys().next().value;
+    if (first !== undefined) metaCache.delete(first);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
@@ -273,10 +298,11 @@ async function buildMeta(slug, type, num, baseId) {
   // on-demand), interroghiamo TMDB per titolo+anno — due richieste veloci, in
   // cache condivisa, di modo che gli episodi non restino mai con la sola
   // copertina. La copertina resta comunque l'ultimo fallback.
+  const season = ids.seasonOf(slug);
   if (config.tmdbApiKey && !merged.episodeThumbs && page.title) {
     try {
       const tm = await Promise.race([
-        kitsu.fetchTmdbSeason(null, page.title, page.year),
+        kitsu.fetchTmdbSeason(null, page.title, page.year, season),
         new Promise((resolve) => setTimeout(() => resolve(META_ENRICH_WAIT), 3000)),
       ]);
       if (tm && tm !== META_ENRICH_WAIT) {
@@ -296,7 +322,8 @@ async function buildMeta(slug, type, num, baseId) {
       (merged.totalEpisodes || page.totalEpisodes)
         ? `Episodio ${v.num}/${merged.totalEpisodes || page.totalEpisodes}`
         : `Episodio ${v.num}`,
-    season: 1,
+    // Stagione riconosciuta dallo slug (sequel "<titolo>-<N>-ita").
+    season,
     episode: v.num,
     // Miniatura del singolo episodio quando disponibile (Kitsu/TMDB/metahub);
     // altrimenti la copertina dell'anime (sempre presente, mai vuota).
@@ -362,18 +389,23 @@ async function handleMeta(req, res) {
     return json(res, { error: 'Tipo non valido' }, 400);
   }
 
+  const cacheKey = `${contentType}|${id}`;
+  const hit = metaCacheGet(cacheKey);
+  if (hit) return json(res, hit);
+
   try {
     const anime = ids.parseAnime(id);
     if (anime) {
-      return json(res, await buildMeta(anime.slug, contentType, null, ids.animeId(anime.slug)));
+      const body = await buildMeta(anime.slug, contentType, null, ids.animeId(anime.slug));
+      metaCacheSet(cacheKey, body);
+      return json(res, body);
     }
 
     const ep = ids.parseEpisodeMeta(id);
     if (ep) {
-      return json(
-        res,
-        await buildMeta(ep.slug, 'series', ep.num, ids.episodeMetaId(ep.num, ep.slug)),
-      );
+      const body = await buildMeta(ep.slug, 'series', ep.num, ids.episodeMetaId(ep.num, ep.slug));
+      metaCacheSet(cacheKey, body);
+      return json(res, body);
     }
   } catch (err) {
     console.warn(`[meta] errore su "${id}": ${err.message}`);
