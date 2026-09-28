@@ -48,6 +48,34 @@ function flushCaches() {
   return { pages, streams };
 }
 
+/**
+ * Svuotamento SELEZIONATO: elimina SOLO le voci scadute (pagine oltre il TTL,
+ * stream oltre il TTL), lasciando intatte quelle ancora fresche. Ritorna i
+ * conteggi e lo slug delle pagine scadute, da ri-accodare. A differenza di
+ * flushCaches() non azzera tutto: AnimeWorld non viene ri-scrapiato in blocco
+ * a ogni sweep.
+ */
+function flushExpired() {
+  const now = Date.now();
+  const evicted = [];
+  let pages = 0;
+  for (const [slug, hit] of pageCache) {
+    if (now - hit.at > config.animePageCacheMs) {
+      pageCache.delete(slug);
+      pages += 1;
+      evicted.push(slug);
+    }
+  }
+  let streams = 0;
+  for (const [epId, hit] of streamCache) {
+    if (now - hit.at > config.streamCacheMs) {
+      streamCache.delete(epId);
+      streams += 1;
+    }
+  }
+  return { pages, streams, evicted };
+}
+
 // Deduplica le richieste simultanee sulla stessa pagina.
 const inflight = new Map();
 
@@ -281,6 +309,7 @@ module.exports = {
   cachePeek,
   cacheStats,
   flushCaches,
+  flushExpired,
   parseAnimePage,
   parseItalianDate,
 };
