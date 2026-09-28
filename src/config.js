@@ -66,6 +66,18 @@ module.exports = {
   // non le fornisce. 0/'' per disattivare il fallback.
   kitsuApiBase: process.env.KITSU_API_BASE || 'https://kitsu.io/api/edge',
 
+  // TMDB API (chiave opzionale da Render): fonti AFFIDABILI per le miniature
+  // degli episodi (still per episodio) al posto della catena kitso.io/metahub
+  // che da Render puo' non confluire. Serve solo TMDB_API_KEY in env; i dati
+  // restano pubblici, la chiave identifica l'app. '' = fonte disattivata.
+  tmdbApiKey: process.env.TMDB_API_KEY || '',
+
+  // Nella richiesta /meta il budget massimo per l'arricchimento Kitsu on-demand:
+  // oltre questo tempo la scheda risponde subito con i soli dati AnimeWorld
+  // (la trama deve essere leggibile da subito) e l'arricchimento prosegue in
+  // background con la coda. 0 per tornare al comportamento bloccante pieno.
+  metaEnrichTimeoutMs: Number(process.env.META_ENRICH_TIMEOUT_MS || 5000),
+
   // Cast (attori e doppiatori) da AniList GraphQL (dati pubblici, nessuna chiave).
   // Preferiti i doppiatori italiani; senza, i seiyuu giapponesi; senza, i nomi
   // dei personaggi principali. CAST_ENABLED=false per disattivarlo.
