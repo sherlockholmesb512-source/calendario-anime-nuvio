@@ -46,6 +46,22 @@ function schedule(task) {
   return run;
 }
 
+// Corsia prioritaria per le richieste legate a un clic dell'utente (meta,
+// stream): NON si accodano dietro ai fetch di sfondo della coda enrich (che
+// occupano la coda seriale a batch di 6 slug con retry e backoff). Concorrenza
+// limitata e piccola per non infastidire AnimeWorld.
+let fastActive = 0;
+const FAST_MAX = 2;
+async function schedulePriority(task) {
+  while (fastActive >= FAST_MAX) await sleep(30);
+  fastActive += 1;
+  try {
+    return await task();
+  } finally {
+    fastActive -= 1;
+  }
+}
+
 async function rawRequest(url, { headers = {}, method = 'GET' } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.httpTimeoutMs);
@@ -73,12 +89,13 @@ async function rawRequest(url, { headers = {}, method = 'GET' } = {}) {
   }
 }
 
-/** GET HTML con retry e backoff esponenziale. */
-async function getHtml(url, { retries = config.httpRetries, headers } = {}) {
+/** GET HTML con retry e backoff esponenziale. priority = corsia utente. */
+async function getHtml(url, { retries = config.httpRetries, headers, priority = false } = {}) {
+  const go = priority ? schedulePriority : schedule;
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      const res = await schedule(() => rawRequest(url, { headers }));
+      const res = await go(() => rawRequest(url, { headers }));
       if (res.status >= 500) throw new Error(`HTTP ${res.status} su ${url}`);
       if (res.status === 404) return { ...res, notFound: true };
       if (res.status >= 400) throw new Error(`HTTP ${res.status} su ${url}`);
@@ -98,12 +115,13 @@ async function getHtml(url, { retries = config.httpRetries, headers } = {}) {
   throw lastError;
 }
 
-/** GET JSON con retry. */
-async function getJson(url, { retries = config.httpRetries, headers } = {}) {
+/** GET JSON con retry. priority = corsia utente. */
+async function getJson(url, { retries = config.httpRetries, headers, priority = false } = {}) {
+  const go = priority ? schedulePriority : schedule;
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      const res = await schedule(() => rawRequest(url, { headers }));
+      const res = await go(() => rawRequest(url, { headers }));
       if (res.status >= 400) throw new Error(`HTTP ${res.status} su ${url}`);
       return JSON.parse(res.body);
     } catch (err) {
@@ -125,7 +143,7 @@ async function getCsrfToken() {
   if (csrfCache.token && Date.now() - csrfCache.at < config.csrfCacheMs) {
     return csrfCache.token;
   }
-  const res = await getHtml(CSRF_PROBE, { retries: 2 });
+  const res = await getHtml(CSRF_PROBE, { retries: 2, priority: true });
   const m = /name="csrf-token"[^>]*content="([^"]+)"/i.exec(res.body);
   if (!m) throw new Error('Token CSRF non trovato su AnimeWorld');
   csrfCache = { token: m[1], at: Date.now() };
