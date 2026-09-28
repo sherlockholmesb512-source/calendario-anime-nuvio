@@ -34,7 +34,9 @@ const MIN_SCORE = 4;
 const searchCache = new Map(); // titolo normalizzato -> { at, hits }
 const metaCache = new Map(); // id richiesto | id canonico -> { at, summary }
 const slugInfo = new Map(); // slug AnimeWorld -> { at, info }
+const castCache = new Map(); // anilistId -> { at, cast }
 const inflight = new Map(); // id richiesto -> Promise
+const failMark = new Map(); // slug -> timestamp ultimo insuccesso (anti-stallo)
 
 const trim = (map, cap) => {
   while (map.size > cap) {
@@ -44,6 +46,11 @@ const trim = (map, cap) => {
 };
 
 const fresh = (entry, now = Date.now()) => Boolean(entry) && now - entry.at < TTL;
+
+// Un fallimento di rete/addon viene dimenticato dopo 5 minuti, cosi' una
+// richiesta utente non s'inceppa ripetutamente su un addon irraggiungibile.
+const NEG_TTL = 5 * 60 * 1000;
+const CAST_CAP = 1500;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -65,27 +72,29 @@ const yearOf = (v) => {
   return m ? Number(m[1]) : null;
 };
 
-async function fetchJson(url) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT);
-  try {
-    const res = await fetch(url, {
-      headers: { Accept: 'application/json' },
-      signal: ctrl.signal,
-    });
-    if (!res.ok) return null;
-    const text = await res.text();
+async function requestJson(url, init = {}, tries = 2) {
+  for (let i = 0; i < tries; i += 1) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TIMEOUT);
     try {
-      return JSON.parse(text);
+      const res = await fetch(url, { ...init, signal: ctrl.signal });
+      if (!res.ok) continue; // retry
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
     } catch {
-      return null;
+      // timeout o rete: retry
+    } finally {
+      clearTimeout(timer);
     }
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
   }
+  return null;
 }
+
+const fetchJson = (url) => requestJson(url);
 
 /** Riduce il meta Kitsu ai campi che ci servono (via video, li teniamo noi). */
 function summarizeMeta(m) {
@@ -169,6 +178,73 @@ async function searchByTitle(title) {
   return hits;
 }
 
+// ---------------------------------------------------------------------------
+// Cast (attori/doppiatori) da AniList GraphQL — dati pubblici, nessuna chiave.
+// ---------------------------------------------------------------------------
+
+const ANILIST_API = 'https://graphql.anilist.co';
+const CAST_QUERY = `query ($id: Int) {
+  Media(id: $id, type: ANIME) {
+    characters(perPage: 12, sort: [ROLE, ID]) {
+      edges {
+        role
+        node { name { full } }
+        vaIt: voiceActors(sort: [RELEVANCE], language: ITALIAN) { name { full } }
+        vaJp: voiceActors(sort: [RELEVANCE], language: JAPANESE) { name { full } }
+      }
+    }
+  }
+}`;
+
+function buildCastList(body) {
+  const media = body && body.data && body.data.Media;
+  const edges = media && Array.isArray(media.characters && media.characters.edges)
+    ? media.characters.edges
+    : [];
+  if (!edges.length) return [];
+  const names = [];
+  const seen = new Set();
+  const push = (n) => {
+    const t = String(n || '').trim();
+    if (t && !seen.has(t)) {
+      seen.add(t);
+      names.push(t);
+    }
+  };
+  // 1) doppiatori italiani; 2) se non ce ne sono, i seiyuu giapponesi;
+  // 3) in ultima spiaggia i nomi dei personaggi principali.
+  const jp = [];
+  for (const e of edges) {
+    for (const v of e.vaIt || []) push(v && v.name && v.name.full);
+    for (const v of e.vaJp || []) {
+      const f = v && v.name && v.name.full;
+      if (f) jp.push(f);
+    }
+  }
+  if (!names.length) jp.forEach(push);
+  if (!names.length) {
+    for (const e of edges) push(e.node && e.node.name && e.node.name.full);
+  }
+  return names.slice(0, 20);
+}
+
+/** Recupera (e mette in cache per AniList id) il cast: mai errori verso l'esterno. */
+async function fetchCast(anilistId) {
+  if (!config.castEnabled || !anilistId) return null;
+  const cached = castCache.get(anilistId);
+  if (fresh(cached)) return cached.cast;
+
+  const body = await requestJson(ANILIST_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ query: CAST_QUERY, variables: { id: Number(anilistId) } }),
+  });
+  const cast = buildCastList(body);
+  castCache.set(anilistId, { at: Date.now(), cast: cast.length ? cast : null });
+  trim(castCache, CAST_CAP);
+  return cast.length ? cast : null;
+}
+
 /**
  * Sceglie l'hit Kitsu piu' affine: titolo normalizzato (nome + alias), copertura
  * dei token, tipo (serie/film) e veto sul anno per scartare gli omonimi.
@@ -217,21 +293,24 @@ const guessType = (page) => (/film|movie|cinema/i.test(page.category || '') ? 'm
 // ---------------------------------------------------------------------------
 
 /**
- * Recupera (e mette in cache) il riassunto Kitsu per uno slug AnimeWorld.
+ * Recupera (e mette in cache) le informazioni Kitsu + cast per uno slug.
  * Non lancia mai: problemi di rete/addon -> null, i dati AnimeWorld restano.
+ * Il cast (AniList) e' indipendente da Kitsu: arriva anche se l'addon cade.
  */
 async function enrichFor(slug, page) {
-  if (!config.kitsuEnabled) return null;
+  if (!config.kitsuEnabled && !config.castEnabled) return null;
   if (!slug || !page || page.notFound) return null;
   const cached = slugInfo.get(slug);
   if (fresh(cached)) return cached.info;
+  const failedAt = failMark.get(slug);
+  if (failedAt && Date.now() - failedAt < NEG_TTL) return null;
 
   let meta = null;
   // Strada principale: id che AnimeWorld gia' espone (AniList prima, e' rapido).
-  if (page.anilistId) meta = await getMetaById(`anilist:${page.anilistId}`);
-  if (!meta && page.malId) meta = await getMetaById(`mal:${page.malId}`);
+  if (config.kitsuEnabled && page.anilistId) meta = await getMetaById(`anilist:${page.anilistId}`);
+  if (!meta && config.kitsuEnabled && page.malId) meta = await getMetaById(`mal:${page.malId}`);
   // Fallback: ricerca per titolo con controlli anti-omonimi.
-  if (!meta && page.title) {
+  if (!meta && config.kitsuEnabled && page.title) {
     const hits = await searchByTitle(page.title);
     const best = pickBestMatch(hits, {
       title: page.title,
@@ -240,9 +319,25 @@ async function enrichFor(slug, page) {
     });
     if (best) meta = await getMetaById(best.id);
   }
-  if (!meta) return null;
+  // Cast dagli id AniList (quando la pagina li espone).
+  let cast = null;
+  if (config.castEnabled && page.anilistId) {
+    try {
+      cast = await fetchCast(page.anilistId);
+    } catch {
+      cast = null;
+    }
+  }
 
-  const info = { ...meta, sourceTitle: page.title || null };
+  if (!meta && !cast) {
+    failMark.set(slug, Date.now());
+    return null;
+  }
+  failMark.delete(slug);
+
+  const info = meta
+    ? { ...meta, sourceTitle: page.title || null, cast }
+    : { sourceTitle: page.title || null, cast };
   slugInfo.set(slug, { at: Date.now(), info });
   trim(slugInfo, SLUG_CAP);
   return info;
@@ -274,25 +369,30 @@ function mergeWithPage(page, info) {
     background: info.background || null,
     logo: info.logo || null,
     episodeThumbs: info.episodeThumbs || null,
+    cast: info.cast && info.cast.length ? info.cast : null,
     kitsuId: info.kitsuId || null,
   };
 }
 
 const stats = () => ({
   enabled: config.kitsuEnabled,
+  castEnabled: config.castEnabled,
   slugCached: slugInfo.size,
   metaCached: metaCache.size,
   searchCached: searchCache.size,
+  castCached: castCache.size,
 });
 
-/** Svuota tutte le cache Kitsu (richiamato periodicamente per liberare spazio). */
+/** Svuota tutte le cache Kitsu/cast (richiamato periodicamente per liberare spazio). */
 function flush() {
-  const n = slugInfo.size + metaCache.size + searchCache.size;
+  const n = slugInfo.size + metaCache.size + searchCache.size + castCache.size;
   slugInfo.clear();
   metaCache.clear();
   searchCache.clear();
+  castCache.clear();
   inflight.clear();
+  failMark.clear();
   return n;
 }
 
-module.exports = { enrichFor, peek, mergeWithPage, normalizeTitle, pickBestMatch, stats, flush };
+module.exports = { enrichFor, peek, mergeWithPage, normalizeTitle, pickBestMatch, stats, flush, fetchCast };
