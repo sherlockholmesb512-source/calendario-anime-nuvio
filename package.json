@@ -1,0 +1,25 @@
+{
+  "name": "calendario-anime-nuvio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Addon Nuvio (protocollo Stremio) con 4 cataloghi AnimeWorld: Ultimi Episodi, Calendario Anime, Anime Movie Italiani, Anime Doppiati in Italiano.",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "smoke": "node scripts/smoke-test.js",
+    "http": "node scripts/http-test.js",
+    "test:kitsu": "node scripts/kitsu-test.js",
+    "assets": "node scripts/generate-assets.js"
+  },
+  "files": [
+    "src",
+    "public",
+    "package.json"
+  ],
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
