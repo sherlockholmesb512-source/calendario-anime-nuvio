@@ -18,6 +18,7 @@
  */
 
 const config = require('./config');
+const { seasonOf } = require('./ids');
 
 const BASE = config.kitsuBase;
 const TTL = config.kitsuCacheMs;
@@ -232,14 +233,15 @@ async function fetchKitsuThumbs(kitsuId) {
 
 const METAHUB = 'https://episodes.metahub.space';
 
-async function fetchMetahubThumbs(imdbId, count) {
+async function fetchMetahubThumbs(imdbId, count, season = 1) {
   const num = Number(count);
+  const sN = Number(season) >= 1 && Number(season) <= 50 ? Number(season) : 1;
   if (!imdbId || !Number.isFinite(num) || num < 1 || num > 300) return null;
   const exists = async (n) => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 12000);
     try {
-      const res = await fetch(`${METAHUB}/${imdbId}/1/${n}/w780.jpg`, {
+      const res = await fetch(`${METAHUB}/${imdbId}/${sN}/${n}/w780.jpg`, {
         method: 'HEAD',
         signal: ctrl.signal,
       });
@@ -253,7 +255,7 @@ async function fetchMetahubThumbs(imdbId, count) {
   if (!(await exists(1)) || !(await exists(num))) return null;
   const thumbs = {};
   for (let n = 1; n <= num; n += 1) {
-    thumbs[n] = `${METAHUB}/${imdbId}/1/${n}/w780.jpg`;
+    thumbs[n] = `${METAHUB}/${imdbId}/${sN}/${n}/w780.jpg`;
   }
   return thumbs;
 }
@@ -297,19 +299,21 @@ function tmdbSearchTitle(title) {
 }
 
 /**
- * Ritorna { thumbs: {n: urlStill}, overviews: {n: tramaIta} } per la stagione 1.
- * Mappa per imdb_id (strada preferita) o, in mancanza, per titolo+anno
- * (utile quando la risposta dell'addon da Render non porta l'imdb_id).
+ * Ritorna { thumbs: {n: urlStill}, overviews: {n: tramaIta} } per una data
+ * stagione (default 1). Mappa per imdb_id (strada preferita) o, in mancanza,
+ * per titolo+anno (utile quando la risposta dell'addon da Render non porta
+ * l'imdb_id). La cache include la stagione: i sequel chiedono /season/{N}.
  */
-async function fetchTmdbSeason(imdbId, title, year) {
+async function fetchTmdbSeason(imdbId, title, year, season = 1) {
   const key = config.tmdbApiKey;
   const imdb = String(imdbId || '').trim();
   const hasImdb = /^tt\d+$/.test(imdb);
+  const sN = Number(season) >= 1 && Number(season) <= 50 ? Number(season) : 1;
   const cleanTitle = tmdbSearchTitle(title);
   const cacheKey = hasImdb
-    ? `i:${imdb}`
+    ? `i:${imdb}|s${sN}`
     : cleanTitle
-      ? `t:${normalizeTitle(cleanTitle)}|${year || ''}`
+      ? `t:${normalizeTitle(cleanTitle)}|${year || ''}|s${sN}`
       : null;
   if (!key || !cacheKey) return null;
   const hit = tmdbCache.get(cacheKey);
@@ -339,7 +343,7 @@ async function fetchTmdbSeason(imdbId, title, year) {
     if (!tvId) return null;
 
     const season = await requestJson(
-      `${TMDB}/tv/${tvId}/season/1?api_key=${encodeURIComponent(key)}&language=it-IT`,
+      `${TMDB}/tv/${tvId}/season/${sN}?api_key=${encodeURIComponent(key)}&language=it-IT`,
       {},
       2,
       12000,
@@ -374,8 +378,8 @@ async function fetchTmdbSeason(imdbId, title, year) {
 }
 
 /** Riusa la stagione TMDB come sola fonte di miniature (compatibilita' test). */
-async function fetchTmdbThumbs(imdbId, title, year) {
-  const data = await fetchTmdbSeason(imdbId, title, year);
+async function fetchTmdbThumbs(imdbId, title, year, season) {
+  const data = await fetchTmdbSeason(imdbId, title, year, season);
   return data && data.thumbs ? data.thumbs : null;
 }
 
@@ -582,6 +586,25 @@ async function enrichFor(slug, page) {
     return null;
   }
   failMark.delete(slug);
+
+  // Stagione dello slug AnimeWorld: i sequel sono "<titolo>-<N>-ita". La
+  // summary Kitsu e' per id dell'addon (condivisa fra le stagioni): per i
+  // sequel sostituiamo thumbnail e trame con quelle della stagione giusta di
+  // TMDB (su una COPIA: la metaCache resta identica per le altre stagioni).
+  const season = seasonOf(slug);
+  if (meta && season > 1 && config.tmdbApiKey) {
+    const tm = await fetchTmdbSeason(
+      meta.imdbId || null,
+      meta.name || page.title,
+      meta.year || page.year,
+      season,
+    );
+    if (tm) {
+      meta = { ...meta };
+      if (tm.thumbs) meta.episodeThumbs = { ...tm.thumbs };
+      if (tm.overviews) meta.episodeOverviews = { ...tm.overviews };
+    }
+  }
 
   const info = meta
     ? { ...meta, sourceTitle: page.title || null, cast }
