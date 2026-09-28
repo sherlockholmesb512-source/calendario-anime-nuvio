@@ -6,6 +6,7 @@ const enrich = require('./enrich');
 const { buildManifest, CAT } = require('./manifest');
 const ids = require('./ids');
 const { getAnimePage, getEpisodeStream, cachePeek } = require('./aw/play');
+const { getSearchItems } = require('./aw/filter');
 const kitsu = require('./kitsu');
 const sweep = require('./sweep');
 
@@ -70,6 +71,15 @@ function italyZoneAbbr(now = new Date()) {
 
 const clean = (text) => (text || '').replace(/\s+/g, ' ').trim();
 const cap = (text) => clean(text).slice(0, 4000);
+
+/** "461703270" -> "~440 MB"; "1069829022" -> "~1.0 GB". */
+function humanSize(bytes) {
+  const b = Number(bytes);
+  if (!Number.isFinite(b) || b <= 0) return null;
+  return b >= 1024 * 1024 * 1024
+    ? `~${(b / (1024 * 1024 * 1024)).toFixed(1)} GB`
+    : `~${Math.round(b / (1024 * 1024))} MB`;
+}
 
 /**
  * Poster "copertine" di AnimeWorld costruito dall'id dell'opera contenuto nello
@@ -243,12 +253,90 @@ function handleCatalog(req, res) {
     return json(res, { error: `Il catalogo "${id}" e' di tipo ${def.type}, non ${type}` }, 404);
   }
 
+  // Alcuni client passano la ricerca nel path (/catalog/x/search=q.json),
+  // altri come query (?search=q): gestiamo entrambi.
+  if (req.query.search != null) {
+    req.params.search = `search=${req.query.search}`;
+    return handleCatalogSearch(req, res);
+  }
+
   const bucket = state[def.bucket];
   const page = paginate(bucket.items, req.query.skip, req.query.limit);
   const metas = page.map((item) => def.build(item)).filter(Boolean);
 
   res.set('X-Catalog-Items-Total', String(bucket.items.length));
   if (bucket.at) res.set('X-Catalog-Refreshed-At', new Date(bucket.at).toISOString());
+  return json(res, { metas });
+}
+
+/**
+ * Ricerca nel catalogo: /catalog/<type>/<id>/search=<query>. Risponde con la
+ * ricerca di AnimeWorld filtrata dal ruolo del catalogo (movie/doppiati) o,
+ * per gli episodic, con gli elementi del bucket quando lo slug e' gia' in
+ * lista, altrimenti con l'anteprima del titolo (apribile via scheda).
+ */
+async function handleCatalogSearch(req, res) {
+  const { type, id, search } = req.params;
+  const def = CATALOGS[id];
+  if (!def) return json(res, { error: `Catalogo sconosciuto: ${id}` }, 404);
+  if (type !== def.type && !def.aliases.includes(type)) {
+    return json(res, { error: `Il catalogo "${id}" e' di tipo ${def.type}, non ${type}` }, 404);
+  }
+
+  let query = String(search || '')
+    .replace(/\.json$/i, '')
+    .replace(/^search=/i, '')
+    .trim();
+  try {
+    query = decodeURIComponent(query);
+  } catch {
+    // resta il valore grezzo se la decodifica fallisse
+  }
+  query = query.replace(/\+/g, ' ').trim();
+  if (!query) return json(res, { metas: [] });
+
+  let items;
+  try {
+    items = await getSearchItems(query, 30);
+  } catch (err) {
+    console.warn(`[catalog] ricerca "${query}" in "${id}" fallita: ${err.message}`);
+    return json(res, { metas: [] });
+  }
+  if (!items.length) return json(res, { metas: [] });
+
+  const seen = new Set();
+  const metas = [];
+  for (const item of items) {
+    if (metas.length >= 30) break;
+    if (seen.has(item.slug)) continue;
+    seen.add(item.slug);
+
+    // Nei cataloghi episodic, se lo slug e' gia' nel bucket usiamo l'anteprima
+    // del bucket (con numero episodio): altrimenti il titolo generico.
+    const inBucket = state[def.bucket].items.find((x) => x.slug === item.slug);
+    if (inBucket) {
+      const m = def.build(inBucket);
+      if (m) metas.push(m);
+      continue;
+    }
+    if (def.bucket === 'movies') {
+      if (item.badge === 'MOVIE' || item.badge === 'DUB') {
+        const m = animePreview(item, 'movie');
+        if (m) metas.push(m);
+      }
+      continue;
+    }
+    if (def.bucket === 'dubbed') {
+      if (item.badge === 'DUB') {
+        const m = animePreview(item, 'series');
+        if (m) metas.push(m);
+      }
+      continue;
+    }
+    const m = animePreview(item, 'series');
+    if (m) metas.push(m);
+  }
+
   return json(res, { metas });
 }
 
@@ -478,10 +566,13 @@ async function handleStream(req, res) {
   const streams = [];
 
   // Come richiesto: l'unica sorgente e' lo streaming diretto di AnimeWorld.
+  // AnimeWorld non espone risoluzioni (singolo MP4 diretto): mostriamo la
+  // dimensione reale del file quando il probe HEAD e' riuscito.
   if (stream.url) {
+    const size = humanSize(stream.size);
     streams.push({
       name: 'AnimeWorld',
-      title: 'AnimeWorld • Streaming diretto',
+      title: size ? `AnimeWorld • Streaming diretto (${size})` : 'AnimeWorld • Streaming diretto',
       url: stream.url,
       behaviorHints: { bingeGroup: group, notWebReady: false },
     });
@@ -590,6 +681,7 @@ function health(req, res) {
 
 module.exports = {
   handleCatalog,
+  handleCatalogSearch,
   handleMeta,
   handleStream,
   landing,
