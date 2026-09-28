@@ -62,6 +62,9 @@ module.exports = {
   kitsuCacheMs: Number(process.env.KITSU_CACHE_MS || minutes(60 * 24)),
   // L'addon Kitsu puo' essere lento a freddo o indisponibile: 20 s e un retry.
   kitsuTimeoutMs: Number(process.env.KITSU_TIMEOUT_MS || 20000),
+  // API pubblica kitso.io: fallback per le miniature degli episodi quando l'addon
+  // non le fornisce. 0/'' per disattivare il fallback.
+  kitsuApiBase: process.env.KITSU_API_BASE || 'https://kitsu.io/api/edge',
 
   // Cast (attori e doppiatori) da AniList GraphQL (dati pubblici, nessuna chiave).
   // Preferiti i doppiatori italiani; senza, i seiyuu giapponesi; senza, i nomi
