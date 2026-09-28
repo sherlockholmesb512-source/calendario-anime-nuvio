@@ -81,6 +81,74 @@ function humanSize(bytes) {
     : `~${Math.round(b / (1024 * 1024))} MB`;
 }
 
+// ---------------------------------------------------------------------------
+// Fonti stream aggiuntive: EasyStreams (addon solo-stream italiano)
+// ---------------------------------------------------------------------------
+
+const easyStreamsCache = new Map(); // "tipo|id" -> { at, streams }
+const easyStreamsInflight = new Map();
+
+/**
+ * Interroga EasyStreams per { type: 'series'|'movie', id } e restituisce i suoi
+ * flussi (torrent o http). Timeout breve (l'addon e' lento): dopo il budget si
+ * replica con il solo stream AnimeWorld. Risposta in cache TTL lungo.
+ */
+async function fetchEasyStreams(type, id) {
+  if (!config.easyStreamsUrl || !id) return [];
+  const cacheKey = `${type}|${id}`;
+  const hit = easyStreamsCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < config.easyStreamsTtlMs) return hit.streams;
+  if (easyStreamsInflight.has(cacheKey)) return easyStreamsInflight.get(cacheKey);
+
+  const task = (async () => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), config.easyStreamsTimeoutMs);
+    try {
+      const res = await fetch(
+        `${config.easyStreamsUrl}/stream/${type}/${encodeURIComponent(id)}.json`,
+        { signal: ctrl.signal, headers: { accept: 'application/json' } },
+      );
+      if (!res.ok) return [];
+      const body = await res.json();
+      const streams = (Array.isArray(body && body.streams) ? body.streams : []).filter(
+        (s) => s && (s.url || s.infoHash),
+      );
+      easyStreamsCache.set(cacheKey, { at: Date.now(), streams });
+      return streams;
+    } catch {
+      return []; // nessuna fonte aggiuntiva: AnimeWorld basta sempre
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+  easyStreamsInflight.set(cacheKey, task);
+  try {
+    return await task;
+  } finally {
+    easyStreamsInflight.delete(cacheKey);
+  }
+}
+
+/**
+ * Id e tipo per EasyStreams dalla richiesta. Preferisce l'imdb_id dell'anime
+ * (enrich Kitsu); altrimenti l'id con prefisso Kitsu/AniList/MAL. Per le serie
+ * aggiunge "stagione:episodio" (protocollo Stremio) dal numero del video.
+ */
+function easyStreamsTarget(req, resolved, videoKey) {
+  const type = req.params.type === 'movie' ? 'movie' : 'series';
+  const kinfo = kitsu.peek(resolved.slug) || {};
+  let id = /^tt\d+$/.test(String(kinfo.imdbId || '')) ? kinfo.imdbId : null;
+  if (!id && /^[a-z]+:\d+$/i.test(String(kinfo.kitsuId || ''))) id = kinfo.kitsuId;
+  if (!id) return null;
+
+  if (type === 'series') {
+    const num = (ids.parseVideo(videoKey) || ids.parseEpisodeMeta(videoKey) || {}).num;
+    if (!num) return null; // gli id "awa" di serie (pochi) non hanno episodio
+    id = `${id}:${ids.seasonOf(resolved.slug)}:${num}`;
+  }
+  return { type, id };
+}
+
 /**
  * Poster "copertine" di AnimeWorld costruito dall'id dell'opera contenuto nello
  * slug (es. `liar-game.MVKsv` -> `https://img.animeworld.ac/copertine/MVKsv.jpg`).
@@ -554,9 +622,19 @@ async function handleStream(req, res) {
   }
   if (!resolved) return json(res, { streams: [] });
 
+  // Sorgente AnimeWorld e, in parallelo, fonti aggiuntive EasyStreams
+  // (se per lo slug conosciamo un id usabile). Il tempo totale e' dominato
+  // dal budget EasyStreams: lo streaming diretto AnimeWorld e' sempre pronto.
+  const es = easyStreamsTarget(req, resolved, videoKey);
   let stream;
+  let extra = [];
   try {
-    stream = await getEpisodeStream(resolved.epId, { priority: true });
+    const [s, e] = await Promise.all([
+      getEpisodeStream(resolved.epId, { priority: true }),
+      es ? fetchEasyStreams(es.type, es.id).catch(() => []) : Promise.resolve([]),
+    ]);
+    stream = s;
+    extra = Array.isArray(e) ? e : [];
   } catch (err) {
     console.warn(`[stream] errore sorgente per ${resolved.epId}: ${err.message}`);
     return json(res, { streams: [] });
@@ -565,7 +643,7 @@ async function handleStream(req, res) {
   const group = resolved.slug ? `calendario-anime|${resolved.slug}` : `calendario-anime|${resolved.epId}`;
   const streams = [];
 
-  // Come richiesto: l'unica sorgente e' lo streaming diretto di AnimeWorld.
+  // L'unica sorgente diretta e' lo streaming di AnimeWorld.
   // AnimeWorld non espone risoluzioni (singolo MP4 diretto): mostriamo la
   // dimensione reale del file quando il probe HEAD e' riuscito.
   if (stream.url) {
@@ -575,6 +653,22 @@ async function handleStream(req, res) {
       title: size ? `AnimeWorld • Streaming diretto (${size})` : 'AnimeWorld • Streaming diretto',
       url: stream.url,
       behaviorHints: { bingeGroup: group, notWebReady: false },
+    });
+  }
+
+  // Fonti AGGIUNTIVE EasyStreams (torrent/http): passano intatte le sorgenti
+  // risolte dall'addon terzo, deduplicando per url/infoHash.
+  const seen = new Set();
+  for (const s of extra) {
+    const key = s.url || s.infoHash;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    streams.push({
+      name: s.name || 'EasyStreams',
+      title: String(s.description || s.name || 'EasyStreams').slice(0, 200),
+      url: s.url || undefined,
+      infoHash: s.infoHash || undefined,
+      behaviorHints: s.behaviorHints && typeof s.behaviorHints === 'object' ? s.behaviorHints : undefined,
     });
   }
 
@@ -676,6 +770,10 @@ function health(req, res) {
     },
     enrich: enrich.stats(),
     sweeper: sweep.get(),
+    easyStreams:
+      config.easyStreamsUrl
+        ? { enabled: true, cacheEntries: easyStreamsCache.size }
+        : { enabled: false },
   });
 }
 
