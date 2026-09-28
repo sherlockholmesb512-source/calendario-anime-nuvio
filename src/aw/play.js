@@ -112,15 +112,38 @@ function parseAnimePage(html, slug) {
     /<img[^>]*id="(?:mobile-)?thumbnail-watch"[^>]*(?:src|data-src)="([^"]+)"/i;
   const posterEl = thumbRe.exec(html);
   let poster = posterEl ? absolute(posterEl[1]) : null;
+  // AnimeWorld pubblica la copertina canonica in <meta name="og:image"
+  // content="..."> (usa "name", non "property"): id corretto ed estensione
+  // giusta. Accettiamo entrambe le sintassi e qualsiasi ordine attributi.
+  const ogRe =
+    /<meta[^>]*(?:property|name)=["']og:image["'][^>]*content=["']([^"']+)["']/is.exec(html)
+    || /<meta[^>]*content=["']([^"']+\.(?:jpe?g|png|webp|avif))["'][^>]*(?:property|name)=["']og:image["']/is.exec(html);
+  const ogUrl = ogRe ? absolute(ogRe[1]) : null;
   if (!poster) {
-    // AnimeWorld pubblica la copertina in <meta name="og:image" content="...">
-    // (usa "name", non "property"): la copertina reale va presa SEMPRE da qui,
-    // con id anime corretto ed estensione giusta. Accettiamo entrambe le
-    // sintassi e qualsiasi ordine degli attributi.
-    const ogRe =
-      /<meta[^>]*(?:property|name)=["']og:image["'][^>]*content=["']([^"']+)["']/is.exec(html)
-      || /<meta[^>]*content=["']([^"']+\.(?:jpe?g|png|webp|avif))["'][^>]*(?:property|name)=["']og:image["']/is.exec(html);
-    if (ogRe) poster = absolute(ogRe[1]);
+    // Poster VERTICALE (manifestini): in Nuvio le card e la scheda risultano
+    // molto meglio con le locandine verticali che con le copertine quadrate.
+    // In ogni pagina /play esiste "locandine/<stessoIdDellOgImage>.<ext>"
+    // (a volte con un suffisso, es. OnePieceElbafPic.png).
+    if (ogUrl) {
+      const idm = /\/copertine\/([^/]+)\.\w+$/i.exec(ogUrl);
+      const want = idm ? idm[1] : null;
+      if (want) {
+        const esc = want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const locRe = new RegExp(
+          `https://img\\.animeworld\\.ac/locandine/${esc}\\.(?:jpe?g|png|webp)`,
+          'i',
+        );
+        const locMatch = locRe.exec(html);
+        if (locMatch) poster = locMatch[0];
+      }
+    }
+    if (!poster) {
+      // Fallback: la prima <img> locandine nel documento e' il manifesto della
+      // serie (le locandine "consigliati" compaiono piu' in basso).
+      const firstLoc = /<img[^>]*(?:src|data-src)="(https:\/\/img\.animeworld\.ac\/locandine\/[^"]+\.(?:jpe?g|png|webp))"[^>]*>/i.exec(html);
+      if (firstLoc) poster = absolute(firstLoc[1]);
+    }
+    if (!poster && ogUrl) poster = ogUrl;
   }
   if (!poster) {
     const parts = String(slug || '').split('.');
