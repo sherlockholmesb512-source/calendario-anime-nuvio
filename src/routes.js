@@ -11,6 +11,7 @@ const { italianDayLabel, isoInItaly, timeInItaly } = require('./aw/schedule');
 const kitsu = require('./kitsu');
 const seasons = require('./seasons');
 const external = require('./external');
+const trailers = require('./trailers');
 const sweep = require('./sweep');
 
 const { state, lookupEpisode } = store;
@@ -240,6 +241,13 @@ const copertine = (slug) => {
 // AnimeWorld (trama inclusa) e l'enrich pesante prosegue in background.
 const META_ENRICH_TIMEOUT_MS = config.metaEnrichTimeoutMs > 0 ? config.metaEnrichTimeoutMs : 5000;
 const META_ENRICH_WAIT = Symbol('meta-enrich-wait');
+
+// Budget massimo, in /meta, per la ricerca dei trailer italiani su YouTube:
+// oltre questo tempo la scheda risponde subito con il trailer di AnimeWorld
+// (se disponibile) e la ricerca prosegue in background, pronta per la prossima
+// richiesta. Evita che un YouTube lento rallenti l'apertura della scheda.
+const META_TRAILER_TIMEOUT_MS = Number(process.env.META_TRAILER_TIMEOUT_MS || 3500);
+const META_TRAILER_WAIT = Symbol('meta-trailer-wait');
 
 function paginate(items, skip, limit) {
   const from = Math.max(0, Number(skip) || 0);
@@ -735,6 +743,25 @@ async function buildMeta(slug, type, num, baseId) {
     page.anilistId ? `AniList: anime/${page.anilistId}` : null,
   ].filter(Boolean);
 
+  // Trailer: ricerca best-effort dei trailer sottotitolati in italiano (canali
+  // italiani su YouTube), con riserva sul trailer incorporato da AnimeWorld.
+  // La scheda non aspetta oltre un budget breve: se YouTube e' lento risponde
+  // subito col solo trailer AnimeWorld e la ricerca prosegue in background.
+  let trailerList = [];
+  try {
+    const found = await Promise.race([
+      trailers.getTrailers({ title: page.title, year: page.year, awTrailer: page.trailer }),
+      new Promise((resolve) => setTimeout(() => resolve(META_TRAILER_WAIT), META_TRAILER_TIMEOUT_MS)),
+    ]);
+    if (found && found !== META_TRAILER_WAIT) {
+      trailerList = found;
+    } else if (page.trailer) {
+      trailerList = [{ source: page.trailer, type: 'Trailer' }];
+    }
+  } catch {
+    // nessun trailer: la scheda resta completa lo stesso
+  }
+
   const meta = {
     id: baseId,
     type,
@@ -753,6 +780,7 @@ async function buildMeta(slug, type, num, baseId) {
     background: merged.background || undefined,
     logo: merged.logo || undefined,
     cast: merged.cast && merged.cast.length ? merged.cast : undefined,
+    trailers: trailerList.length ? trailerList : undefined,
     posterShape: 'poster',
     links: [{ name: 'Apri su AnimeWorld', category: 'Anime', url: page.pageUrl }],
   };
@@ -1034,6 +1062,7 @@ function health(req, res) {
     },
     seasons: seasons.stats(),
     external: external.stats(),
+    trailers: trailers.stats(),
     enrich: enrich.stats(),
     sweeper: sweep.get(),
     // Le fonti aggiuntive EasyStreams non vengono piu' interrogate: /stream

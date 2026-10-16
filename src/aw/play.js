@@ -252,12 +252,21 @@ function parseAnimePage(html, slug) {
     }
   }
 
+  // Trailer ufficiale: AnimeWorld lo incorpora da YouTube in un div ".trailer"
+  // (data-url="https://www.youtube.com/embed/<id>"). Best-effort: se manca non
+  // si mostra alcun trailer.
+  const trailer = (() => {
+    const m = /class="trailer[^"]*"[^>]*data-url="https:\/\/www\.youtube\.com\/embed\/([A-Za-z0-9_-]{11})"/i.exec(html);
+    return m ? m[1] : null;
+  })();
+
   return {
     slug,
     notFound: false,
     title,
     description,
     poster,
+    trailer,
     category: meta.categoria || null,
     audio: meta.audio || null,
     state: meta.stato || null,

@@ -126,6 +126,23 @@ module.exports = {
   // background con la coda. 0 per tornare al comportamento bloccante pieno.
   metaEnrichTimeoutMs: Number(process.env.META_ENRICH_TIMEOUT_MS || 5000),
 
+  // -------------------------------------------------------------------------
+  // Trailer (meta.trailers)
+  // -------------------------------------------------------------------------
+  // L'addon aggiunge un pulsante "Trailer" alla scheda. Per avere i trailer
+  // SOTTOTITOLATI IN ITALIANO la fonte migliore sono i canali italiani che li
+  // pubblicano (Crunchyroll Italia, Yamato Video, Dynit, ...): si cercano su
+  // YouTube con una query "<titolo> trailer italiano" e si scelgono i risultati
+  // dei canali/keyword affidabili. Come riserva si usa il trailer che AnimeWorld
+  // incorpora nella pagina (di norma il PV giapponese). TRAILERS_ENABLED=false
+  // per non mostrare alcun trailer.
+  trailersEnabled: process.env.TRAILERS_ENABLED !== 'false',
+  // Quanti trailer mostrare al massimo nella scheda.
+  trailersMax: Number(process.env.TRAILERS_MAX || 3),
+  // Cache dei trailer trovati per titolo (le ricerche YouTube sono lente).
+  trailersCacheMs: Number(process.env.TRAILERS_CACHE_MS || minutes(60 * 24)),
+  trailersTimeoutMs: Number(process.env.TRAILERS_TIMEOUT_MS || 5000),
+
   // Cast (attori e doppiatori) da AniList GraphQL (dati pubblici, nessuna chiave).
   // Preferiti i doppiatori italiani; senza, i seiyuu giapponesi; senza, i nomi
   // dei personaggi principali. CAST_ENABLED=false per disattivarlo.

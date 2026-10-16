@@ -176,6 +176,8 @@ background), `TMDB_API_KEY` (miniature episodio affidabili da TMDB quando
 l'addon e kitso.io non coprono il titolo; da impostare nel pannello Render),
 `SEASONS_ENABLED` (raggruppamento delle stagioni, default attivo) e
 `AIO_BASE` (endpoint AIOMetadata per stagioni/trame episodio in italiano).
+Per i trailer: `TRAILERS_ENABLED`, `TRAILERS_MAX`, `META_TRAILER_TIMEOUT_MS`
+(vedi la sezione "Trailer con sottotitoli in italiano").
 Le variabili `EASYSTREAMS_*` esistono ancora ma l'integrazione non è più
 interrogata: `/stream` restituisce solo lo streaming diretto di AnimeWorld.
 
@@ -240,6 +242,26 @@ raggruppamento (torna alla sola stagione della pagina aperta).
 
 ---
 
+## Trailer con sottotitoli in italiano
+
+Nella scheda compare il pulsante **Trailer**. Per avere trailer *sottotitolati in
+italiano* l'addon cerca su YouTube `<titolo> trailer italiano` e tiene i risultati
+dei canali italiani di anime (**Crunchyroll Italia**, **Yamato Video**, **Dynit**,
+**Anime Factory**, **Star Comics**, **VVVVID**, ...) o con keyword italiane
+(`sub ita`, `sottotitolato`, ...). I risultati chiaramente estranei o non-trailer
+(episodi, sigle, AMV, "concept"/live-action amatoriali, video lunghi) vengono
+scartati.
+
+La ricerca è **best-effort** e non rallenta l'apertura della scheda: `/meta`
+aspetta al massimo ~3,5 s (regolabile con `META_TRAILER_TIMEOUT_MS`); se YouTube è
+lento la scheda risponde subito col trailer incorporato da **AnimeWorld** (di norma
+il PV giapponese) e la ricerca prosegue in background, pronta per la richiesta
+successiva. Impostazioni: `TRAILERS_ENABLED=false` per disattivare i trailer,
+`TRAILERS_MAX` (default 3) per il numero massimo mostrato, `TRAILERS_CACHE_MS`
+(default 24 h) per la durata della cache per titolo.
+
+---
+
 ## Struttura
 
 ```
@@ -251,6 +273,7 @@ src/
   enrich.js           arricchimento schede in background
   seasons.js          raggruppamento stagioni/cour e dettagli episodio
   external.js         client AIOMetadata / TMDB / TVDB
+  trailers.js         trailer (YouTube, canali italiani) + riserva AnimeWorld
   ids.js              codifica/decodifica degli ID (awa./awm./awv.)
   routes.js           handler catalog/meta/stream, landing page, /health
   aw/
