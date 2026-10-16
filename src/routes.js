@@ -7,7 +7,10 @@ const { buildManifest, CAT } = require('./manifest');
 const ids = require('./ids');
 const { getAnimePage, getEpisodeStream, cachePeek } = require('./aw/play');
 const { getSearchItems } = require('./aw/filter');
+const { italianDayLabel, isoInItaly, timeInItaly } = require('./aw/schedule');
 const kitsu = require('./kitsu');
+const seasons = require('./seasons');
+const external = require('./external');
 const sweep = require('./sweep');
 
 const { state, lookupEpisode } = store;
@@ -162,9 +165,20 @@ function easyStreamsTarget(req, resolved, videoKey, kinfo) {
   if (!id) return null;
 
   if (type === 'series') {
-    const num = (ids.parseVideo(videoKey) || ids.parseEpisodeMeta(videoKey) || {}).num;
+    const parsed = ids.parseVideo(videoKey) || ids.parseEpisodeMeta(videoKey) || {};
+    let num = parsed.num;
     if (!num) return null; // gli id "awa" di serie (pochi) non hanno episodio
-    id = `${id}:${ids.seasonOf(resolved.slug)}:${num}`;
+    // Stagione/episodio "veri": per i sequel AnimeWorld usa uno slug diverso con
+    // numero che riparte da 1 (e le pagine di prosecuzione sono unite). Se il
+    // gruppo di stagioni e' in cache lo usiamo per la coppia stagione:episodio
+    // che i client si aspettano, altrimenti ricadiamo sullo slug.
+    let season = ids.seasonOf(resolved.slug);
+    const loc = seasons.locateEpisode(seasons.peekBundle(resolved.slug), resolved.slug, num);
+    if (loc) {
+      season = loc.season;
+      num = loc.num;
+    }
+    id = `${id}:${season}:${num}`;
   }
   return { type, id };
 }
@@ -175,15 +189,21 @@ function easyStreamsTarget(req, resolved, videoKey, kinfo) {
  * aggiuntive compaiono anche al primo click su un episodio appena uscito.
  */
 async function resolveEasyStreamsTarget(req, resolved, videoKey) {
-  let kinfo = kitsu.peek(resolved.slug);
-  if ((!kinfo || kitsu.needsRetry(resolved.slug)) && config.kitsuEnabled) {
-    let page = cachePeek(resolved.slug);
+  // La pagina di una prosecuzione ("X 2 Part 2") ha slug e id propri, spesso
+  // senza id esterni: per Kitsu usiamo la pagina PRINCIPALE del gruppo, cosi'
+  // l'anime resta riconosciuto (imdb/kitsu). Stagione ed episodio "veri" li
+  // ricava easyStreamsTarget dal gruppo in cache.
+  const bundle = seasons.peekBundle(resolved.slug);
+  const kSlug = bundle && bundle.mainSlug ? bundle.mainSlug : resolved.slug;
+  let kinfo = kitsu.peek(kSlug);
+  if ((!kinfo || kitsu.needsRetry(kSlug)) && config.kitsuEnabled) {
+    let page = cachePeek(kSlug);
     if (!page) {
       // Episodio del catalogo con la pagina MAI fetchata (lo store lo risolve
       // da solo): la recuperiamo ora per avere gli id MAL/AniList, sempre
       // dentro il budget breve (la coda di sfondo la fetcha comunque a parte).
       page = await Promise.race([
-        getAnimePage(resolved.slug, { priority: false }).catch(() => null),
+        getAnimePage(kSlug, { priority: false }).catch(() => null),
         new Promise((resolve) => setTimeout(() => resolve(META_ENRICH_WAIT), META_ENRICH_TIMEOUT_MS)),
       ]);
       if (page === META_ENRICH_WAIT) return null; // non blocchiamo oltre il budget
@@ -191,12 +211,12 @@ async function resolveEasyStreamsTarget(req, resolved, videoKey) {
     if (page && !page.notFound) {
       try {
         kinfo = await Promise.race([
-          kitsu.enrichFor(resolved.slug, page).then(() => kitsu.peek(resolved.slug)).catch(() => null),
+          kitsu.enrichFor(kSlug, page).then(() => kitsu.peek(kSlug)).catch(() => null),
           new Promise((resolve) => setTimeout(() => resolve(META_ENRICH_WAIT), META_ENRICH_TIMEOUT_MS)),
         ]);
         if (kinfo === META_ENRICH_WAIT) kinfo = null; // l'enrich pesante prosegue in background
       } catch (err) {
-        console.warn(`[es] kitsu non disponibile per ${resolved.slug}: ${err.message}`);
+        console.warn(`[es] kitsu non disponibile per ${kSlug}: ${err.message}`);
         kinfo = null;
       }
     }
@@ -276,17 +296,69 @@ const epShort = (ep, total) => (total ? `${ep}/${total}` : `${ep}`);
 // Anteprime dei 4 cataloghi
 // ---------------------------------------------------------------------------
 
-/** 1. Ultimi Episodi: un elemento per episodio uscito. */
+/** "ven" da una data ISO (usata per le sigle compatte del calendario). */
+function weekdayShort(iso) {
+  try {
+    return new Intl.DateTimeFormat('it-IT', { weekday: 'short' })
+      .format(new Date(`${String(iso).slice(0, 10)}T12:00:00Z`))
+      .replace(/\.$/, '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * "Prossimo episodio: Ep 3 — venerdì 17 ottobre alle 15:30" ricavato dal
+ * calendario AnimeWorld (gratuito, in memoria). Se l'uscita di oggi e' gia'
+ * passata non torna nulla: e' gia' l'ultimo episodio uscito.
+ */
+function nextAirLine(slug) {
+  const now = Date.now();
+  const sched = store.nextAir(slug);
+  if (!sched || !sched.at || !sched.date) return null;
+  const head = sched.epNumber ? `Ep ${sched.epNumber} — ` : '';
+  if (sched.at > now) {
+    return `Prossimo episodio: ${head}${sched.label} ${sched.date}${sched.time ? ` alle ${sched.time}` : ''}`;
+  }
+  if (sched.date === isoInItaly(now) && sched.time) {
+    return `Prossimo episodio: ${head}oggi alle ${sched.time}`;
+  }
+  return null;
+}
+
+/** Forma compatta per la riga releaseInfo della card: "Oggi 15:30" / "ven 17 15:30". */
+function nextAirShort(slug) {
+  const now = Date.now();
+  const sched = store.nextAir(slug);
+  if (!sched || !sched.at || !sched.date || sched.at < now) return null;
+  if (sched.date === isoInItaly(now)) return sched.time ? `Oggi ${sched.time}` : 'Oggi';
+  const wd = weekdayShort(sched.date);
+  const day = Number(sched.date.slice(8, 10));
+  const dayPart = wd && day ? `${wd} ${day}` : sched.date;
+  return sched.time ? `${dayPart} · ${sched.time}` : dayPart;
+}
+
+/** 1. Ultimi Episodi: un elemento per episodio uscito (id stabile per SERIE). */
 function latestPreview(item) {
   const meta = lightMeta(item.slug, item.name, item.poster);
   const audio = item.badge === 'DUB' ? 'DUB ITA' : 'SUB ITA';
+  const nextLine = nextAirLine(item.slug);
+  const nextShort = nextAirShort(item.slug);
   return {
-    id: ids.episodeMetaId(item.epNumber || 0, item.slug),
+    // Id PER SERIE (stabile, non per episodio): Nuvio aggancia qui "già visto"
+    // e progresso, e la scheda mostra tutta la serie con le sue stagioni.
+    id: ids.animeId(item.slug),
     type: 'series',
     name: meta.name,
     poster: meta.poster || item.poster,
-    description: cap([`${audio} — ultimo episodio uscito.`, item.epNumber ? epLabel(item.epNumber, meta.totalEpisodes) : null, meta.description].filter(Boolean).join('\n\n')),
-    releaseInfo: item.epNumber ? `Ep ${item.epNumber}` : 'Nuovo',
+    description: cap(
+      [nextLine, `${audio} — ultimo episodio uscito.`,
+        item.epNumber ? epLabel(item.epNumber, meta.totalEpisodes) : null,
+        meta.description].filter(Boolean).join('\n\n'),
+    ),
+    releaseInfo:
+      (item.epNumber ? `Ep ${epShort(item.epNumber, meta.totalEpisodes)}` : 'Nuovo') +
+      (nextShort ? ` · ${nextShort}` : ''),
     genres: meta.genres.length ? meta.genres.slice(0, 6) : undefined,
     imdbRating: meta.rating || undefined,
     behaviorHints: { defaultVideoId: ids.videoId(item.epNumber || 0, item.slug) },
@@ -296,19 +368,32 @@ function latestPreview(item) {
 /** 2. Calendario Anime: solo gli episodi in uscita oggi, con numero, totale e orario. */
 function schedulePreview(item, zone) {
   const meta = lightMeta(item.slug, item.title, item.poster);
-  const when = item.time ? `alle ${item.time} (${zone})` : 'orario non ancora definito';
+  const indeterminate = Boolean(item.indeterminate);
+  const when = indeterminate
+    ? 'senza data fissa'
+    : item.time
+      ? `alle ${item.time} (${zone})`
+      : 'orario non ancora definito';
   // Nel card deve comparire subito l'episodio con il totale e l'orario, es.:
   //   "Liar Game"  —  Ep 26/26 · Oggi 18:30
-  // Il totale arriva dal arricchimento della pagina /play (in cache); se non e'
+  // Il totale arriva dall'arricchimento della pagina /play (in cache); se non e'
   // ancora noto usciamo con il solo numero episodio.
   const epPart = item.epNumber ? `Ep ${epShort(item.epNumber, meta.totalEpisodes)}` : 'Ep ?';
-  const whenPart = item.time ? `Oggi ${item.time}` : 'Oggi';
+  const whenPart = indeterminate ? 'Senza data fissa' : item.time ? `Oggi ${item.time}` : 'Oggi';
+  const lead = indeterminate
+    ? 'Episodio in arrivo, AnimeWorld non ha ancora fissato una data.'
+    : `Uscita di oggi ${when}.`;
   return {
-    id: ids.episodeMetaId(item.epNumber || 0, item.slug),
+    // Id PER SERIE: come in "Ultimi Episodi", cosi' Nuvio riconosce la serie
+    // (episodi visti, lista stagioni) e non l'episodio singolo.
+    id: ids.animeId(item.slug),
     type: 'series',
     name: meta.name,
     poster: meta.poster || item.poster,
-    description: cap([`Uscita di oggi ${when}.`, item.epNumber ? epLabel(item.epNumber, meta.totalEpisodes) + '.' : null, meta.description].filter(Boolean).join('\n\n')),
+    description: cap(
+      [lead, item.epNumber ? epLabel(item.epNumber, meta.totalEpisodes) + '.' : null,
+        meta.description].filter(Boolean).join('\n\n'),
+    ),
     releaseInfo: `${epPart} · ${whenPart}`,
     genres: meta.genres.length ? meta.genres.slice(0, 6) : undefined,
     imdbRating: meta.rating || undefined,
@@ -327,17 +412,49 @@ function animePreview(item, type) {
     : item.badge === 'DUB'
       ? 'Doppiato in italiano'
       : 'In italiano';
+  const nextShort = isMovie ? null : nextAirShort(item.slug);
   return {
     id: ids.animeId(item.slug),
     type,
     name: meta.name,
     poster: meta.poster || item.poster,
-    description: cap([tag, meta.description].filter(Boolean).join('\n\n')),
-    releaseInfo: meta.year || (isMovie ? 'Movie' : 'ITA'),
+    description: cap([tag, nextAirLine(item.slug), meta.description].filter(Boolean).join('\n\n')),
+    releaseInfo:
+      (meta.year || (isMovie ? 'Movie' : 'ITA')) + (nextShort ? ` · ${nextShort}` : ''),
     genres: meta.genres.length ? meta.genres.slice(0, 6) : undefined,
     imdbRating: meta.rating || undefined,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Contenuto "vivo" del catalogo Calendario (ricalcolato a ogni richiesta)
+// ---------------------------------------------------------------------------
+
+/**
+ * Le uscite di OGGI, scelte al momento confrontando l'ora corrente con gli
+ * intervalli reali [start, end) dei giorni: a mezzanotte il catalogo gira da
+ * solo senza aspettare il refresh periodico. Deduplicate per slug (una serie
+ * non deve comparire due volte nella stessa giornata).
+ */
+function liveScheduleItems() {
+  const today = store.scheduleToday();
+  const out = [];
+  const seen = new Set();
+  const push = (item) => {
+    if (!item || !item.slug || seen.has(item.slug)) return;
+    seen.add(item.slug);
+    out.push(item);
+  };
+  for (const item of (today && today.items) || []) push(item);
+  if (config.includeIndeterminate) {
+    for (const item of state.schedule.indeterminate || []) push(item);
+  }
+  return out;
+}
+
+/** Elementi su cui cercare/paginare per un catalogo. */
+const bucketItems = (def) =>
+  def.live ? liveScheduleItems() : (state[def.bucket] && state[def.bucket].items) || [];
 
 // ---------------------------------------------------------------------------
 // /catalog/:type/:id
@@ -352,6 +469,9 @@ const CATALOGS = {
     bucket: 'schedule',
     type: 'anime',
     aliases: ['series'],
+    // "live": il contenuto NON viene dallo snapshot dell'ultimo refresh ma e'
+    // ricalcolato a ogni richiesta (uscite di oggi secondo l'ora corrente).
+    live: true,
     build: (item) => schedulePreview(item, italyZoneAbbr()),
   },
   [CAT.movies]: {
@@ -383,12 +503,17 @@ function handleCatalog(req, res) {
     return handleCatalogSearch(req, res);
   }
 
-  const bucket = state[def.bucket];
-  const page = paginate(bucket.items, req.query.skip, req.query.limit);
+  const items = bucketItems(def);
+  const page = paginate(items, req.query.skip, req.query.limit);
   const metas = page.map((item) => def.build(item)).filter(Boolean);
 
-  res.set('X-Catalog-Items-Total', String(bucket.items.length));
-  if (bucket.at) res.set('X-Catalog-Refreshed-At', new Date(bucket.at).toISOString());
+  res.set('X-Catalog-Items-Total', String(items.length));
+  const at = def.live ? state.schedule.at : state[def.bucket].at;
+  if (at) res.set('X-Catalog-Refreshed-At', new Date(at).toISOString());
+  if (def.live) {
+    const today = store.scheduleToday();
+    if (today) res.set('X-Schedule-Date', today.date || '');
+  }
   return json(res, { metas });
 }
 
@@ -436,7 +561,7 @@ async function handleCatalogSearch(req, res) {
 
     // Nei cataloghi episodic, se lo slug e' gia' nel bucket usiamo l'anteprima
     // del bucket (con numero episodio): altrimenti il titolo generico.
-    const inBucket = state[def.bucket].items.find((x) => x.slug === item.slug);
+    const inBucket = bucketItems(def).find((x) => x.slug === item.slug);
     if (inBucket) {
       const m = def.build(inBucket);
       if (m) metas.push(m);
@@ -527,31 +652,82 @@ async function buildMeta(slug, type, num, baseId) {
     }
   }
 
-  const videos = (page.videos || []).map((v) => ({
-    id: ids.videoId(v.num, slug),
-    title:
-      (merged.totalEpisodes || page.totalEpisodes)
-        ? `Episodio ${v.num}/${merged.totalEpisodes || page.totalEpisodes}`
-        : `Episodio ${v.num}`,
-    // Stagione riconosciuta dallo slug (sequel "<titolo>-<N>-ita").
-    season,
-    episode: v.num,
-    // Miniatura del singolo episodio quando disponibile (Kitsu/TMDB/metahub);
-    // altrimenti la copertina dell'anime (sempre presente, mai vuota).
-    thumbnail:
-      (merged.episodeThumbs && merged.episodeThumbs[v.num]) ||
-      merged.poster ||
-      page.poster ||
-      copertine(slug),
-    // Trama del singolo episodio in italiano (TMDB) quando disponibile.
-    overview:
-      (merged.episodeOverviews && merged.episodeOverviews[v.num]) || undefined,
-  }));
+  // Gruppo di stagioni: TUTTE le pagine/stagioni dell'opera (fonte primaria la
+  // sezione "Correlati" della pagina, poi la ricerca), con i numeri di stagione
+  // e i dettagli episodio (titolo/trama italiana, still, data di uscita) dalle
+  // fonti esterne. Cosi' un sequel non mostra piu' la sola stagione in corso.
+  let bundle = null;
+  if (config.seasonsEnabled) {
+    try {
+      bundle = await seasons.getSeriesBundle(slug, { priority: true });
+    } catch (err) {
+      console.warn(`[meta] gruppo stagioni non disponibile per ${slug}: ${err.message}`);
+    }
+  }
 
+  let eps = seasons.flattenEpisodes(bundle);
+  if (!eps.length) {
+    // Ripiego: sola pagina principale (comportamento precedente).
+    const season = ids.seasonOf(slug);
+    eps = (page.videos || []).map((v) => ({
+      num: v.num,
+      season,
+      epId: v.id,
+      slug,
+      total: page.totalEpisodes || null,
+      title: null,
+      overview: null,
+      thumbnail: null,
+      released: null,
+      runtime: null,
+    }));
+  }
+
+  const totalHere = merged.totalEpisodes || page.totalEpisodes || null;
+  const videos = eps.map((e) => {
+    const isMain = e.slug === slug;
+    // Trame/miniature Kitsu/TMDB: valgono per la pagina principale, mentre per
+    // le altre stagioni arrivano dalla fonte esterna del bundle.
+    const thumbs = isMain ? merged.episodeThumbs : null;
+    const overs = isMain ? merged.episodeOverviews : null;
+    const total = e.total || totalHere;
+    const label = total ? `Episodio ${e.num}/${total}` : `Episodio ${e.num}`;
+    return {
+      // Id video con lo slug della PROPRIA stagione: /stream lo risolve sulla
+      // pagina giusta anche quando la serie ne ha piu' di una. Per le pagine di
+      // prosecuzione unite (srcNum/srcSlug) conta lo slug e il numero ORIGINALI,
+      // non quello rinumerato nella stagione.
+      id: ids.videoId(e.srcNum != null ? e.srcNum : e.num, e.srcSlug || e.slug),
+      season: e.season,
+      episode: e.num,
+      // "Episodio 3/24 — Il ritorno del drago": numero, totale e titolo reale.
+      title: e.title ? `${label} — ${e.title}` : label,
+      // Miniatura del singolo episodio (still) dalla fonte esterna/Kitsu/TMDB;
+      // in ultima istanza la copertina dell'anime (mai vuota).
+      thumbnail:
+        e.thumbnail ||
+        (thumbs && thumbs[e.num]) ||
+        merged.poster ||
+        page.poster ||
+        copertine(e.slug),
+      // Trama del singolo episodio in italiano.
+      overview: e.overview || (overs && overs[e.num]) || undefined,
+      // Data di uscita (la usa il cliente per ordinare e marcizzare le stagioni).
+      released: e.released || undefined,
+    };
+  });
+
+  const nextLine = nextAirLineFor(bundle, slug);
+
+  const seasonNote =
+    bundle && bundle.seasonCount > 1
+      ? `Stagioni: ${bundle.seasonCount} (tutte raccolte in questa scheda)`
+      : null;
   const notes = [
     page.category ? `Categoria: ${page.category}` : null,
     page.audio ? `Audio: ${page.audio}` : null,
-    (merged.totalEpisodes || page.totalEpisodes) ? `Episodi totali: ${merged.totalEpisodes || page.totalEpisodes}` : null,
+    totalHere ? `Episodi totali: ${totalHere}` : null,
+    seasonNote,
     (merged.runtime || page.duration) ? `Durata: ${merged.runtime || page.duration}` : null,
     (merged.status || page.state) ? `Stato: ${merged.status || page.state}` : null,
     (merged.rating || page.rating) ? `Voto: ${merged.rating || page.rating}${kinfo ? ' (IMDb)' : '/10'}` : null,
@@ -564,7 +740,13 @@ async function buildMeta(slug, type, num, baseId) {
     type,
     name: page.title,
     poster: merged.poster || page.poster || copertine(slug),
-    description: cap([merged.description || page.description, notes.join(' · ')].filter(Boolean).join('\n\n')),
+    // Prima riga la prossima uscita: "Prossimo episodio: Ep 3 — venerdì 17
+    // ottobre alle 15:30" (calendario) oppure "— 24 ottobre" (fonte esterna).
+    description: cap(
+      [nextLine, merged.description || page.description, notes.join(' · ')]
+        .filter(Boolean)
+        .join('\n\n'),
+    ),
     releaseInfo: merged.year || page.year || '',
     genres: merged.genres || page.genres || [],
     imdbRating: merged.rating || page.rating || undefined,
@@ -582,13 +764,50 @@ async function buildMeta(slug, type, num, baseId) {
     }
   } else {
     meta.videos = videos;
-    const chosen = (num && videos.find((v) => v.episode === num)) || videos[videos.length - 1];
+    // Punto di ingresso: l'episodio richiesto (id "awm") oppure l'ultimo gia'
+    // uscito (le date future delle fonti esterne non devono diventare default).
+    const now = Date.now();
+    const aired = videos.filter((v) => {
+      const t = v.released ? Date.parse(v.released) : NaN;
+      return !Number.isFinite(t) || t <= now;
+    });
+    const chosen =
+      (num && videos.find((v) => v.id === ids.videoId(num, slug))) ||
+      aired[aired.length - 1] ||
+      videos[videos.length - 1];
     if (chosen) {
       meta.behaviorHints = { defaultVideoId: chosen.id, bingeGroup: `calendario-anime|${slug}` };
     }
   }
 
   return { meta };
+}
+
+/**
+ * Riga "Prossimo episodio" per la descrizione della scheda.
+ * Prima il calendario AnimeWorld (giorno + orario preciso), poi la fonte
+ * esterna del bundle (solo data di uscita, utile anche fuori settimana).
+ */
+function nextAirLineFor(bundle, slug) {
+  const now = Date.now();
+  const main = (bundle && bundle.mainSlug) || slug;
+  const sched = store.nextAir(main) || store.nextAir(slug);
+  if (sched && sched.at && sched.date) {
+    const head = sched.epNumber ? `Ep ${sched.epNumber} — ` : '';
+    if (sched.at > now) {
+      return `Prossimo episodio: ${head}${sched.label} ${sched.date}${sched.time ? ` alle ${sched.time}` : ''}`;
+    }
+    if (sched.date === isoInItaly(now) && sched.time) {
+      return `Prossimo episodio: ${head}oggi alle ${sched.time}`;
+    }
+  }
+  const ext = seasons.nextEpisodeFromExternal(bundle);
+  if (ext && Number.isFinite(ext.ts) && ext.ts > now) {
+    const iso = String(ext.released || '').slice(0, 10);
+    const head = ext.episode ? `Ep ${ext.episode}` : 'Nuovo episodio';
+    return `Prossimo episodio: ${head}${iso ? ` — ${store.formatItalianDate(iso)}` : ''}`;
+  }
+  return null;
 }
 
 async function handleMeta(req, res) {
@@ -677,22 +896,13 @@ async function handleStream(req, res) {
   }
   if (!resolved) return json(res, { streams: [] });
 
-  // Sorgente AnimeWorld e, in parallelo, fonti aggiuntive EasyStreams.
-  // Il target es arricchisce Kitsu on-demand (budget breve) se serve: non si
-  // aspetta che la coda di sfondo abbia gia' coperto lo slug. Il tempo totale
-  // e' dominato dal budget EasyStreams: lo streaming diretto e' sempre pronto.
+  // Unica sorgente: lo streaming diretto di AnimeWorld. Le fonti aggiuntive
+  // EasyStreams sono volutamente escluse (l'utente vuole solo il primo flusso,
+  // quello diretto): cosi' /stream risponde subito, senza attendere l'addon
+  // terzo. Le funzioni EasyStreams restano disponibili per una riattivazione.
   let stream;
-  let extra = [];
   try {
-    const [s, e] = await Promise.all([
-      getEpisodeStream(resolved.epId, { priority: true }),
-      (async () => {
-        const t = await resolveEasyStreamsTarget(req, resolved, videoKey);
-        return t ? fetchEasyStreams(t.type, t.id).catch(() => []) : [];
-      })(),
-    ]);
-    stream = s;
-    extra = Array.isArray(e) ? e : [];
+    stream = await getEpisodeStream(resolved.epId, { priority: true });
   } catch (err) {
     console.warn(`[stream] errore sorgente per ${resolved.epId}: ${err.message}`);
     return json(res, { streams: [] });
@@ -701,7 +911,6 @@ async function handleStream(req, res) {
   const group = resolved.slug ? `calendario-anime|${resolved.slug}` : `calendario-anime|${resolved.epId}`;
   const streams = [];
 
-  // L'unica sorgente diretta e' lo streaming di AnimeWorld.
   // AnimeWorld non espone risoluzioni (singolo MP4 diretto): mostriamo la
   // dimensione reale del file quando il probe HEAD e' riuscito.
   if (stream.url) {
@@ -711,22 +920,6 @@ async function handleStream(req, res) {
       title: size ? `AnimeWorld • Streaming diretto (${size})` : 'AnimeWorld • Streaming diretto',
       url: stream.url,
       behaviorHints: { bingeGroup: group, notWebReady: false },
-    });
-  }
-
-  // Fonti AGGIUNTIVE EasyStreams (torrent/http): passano intatte le sorgenti
-  // risolte dall'addon terzo, deduplicando per url/infoHash.
-  const seen = new Set();
-  for (const s of extra) {
-    const key = s.url || s.infoHash;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    streams.push({
-      name: s.name || 'EasyStreams',
-      title: String(s.description || s.name || 'EasyStreams').slice(0, 200),
-      url: s.url || undefined,
-      infoHash: s.infoHash || undefined,
-      behaviorHints: s.behaviorHints && typeof s.behaviorHints === 'object' ? s.behaviorHints : undefined,
     });
   }
 
@@ -750,6 +943,7 @@ function landing(req, res) {
   const base = baseUrlOf(req);
   const manifest = buildManifest(base);
   const host = req.headers.host || 'TUO-DOMINIO.up.railway.app';
+  const today = store.scheduleToday();
 
   const rows = manifest.catalogs
     .map((c) => `<tr><td>${c.name}</td><td><code>${c.type}</code></td><td><code>${c.id}</code></td></tr>`)
@@ -787,10 +981,10 @@ th{background:#f9fafb}
 
 <h2>Stato dei dati</h2>
 ${line(Boolean(state.latest.at), 'Ultimi Episodi', `${state.latest.items.length} episodi${state.latest.at ? ` · aggiornati ${ageMin(state.latest.at)} min fa` : ''}`)}
-${line(Boolean(state.schedule.at), `Calendario Anime (${state.schedule.today || 'n/d'})`, `${state.schedule.timedCount || 0} uscite in giornata, tutte con orario`)}
+${line(Boolean(state.schedule.at), `Calendario Anime${today ? ` (${today.date})` : ''}`, today ? `${today.items.length} uscite oggi, ${today.items.filter((i) => i.time).length} con orario definite` : 'nessuna uscita di oggi dal calendario')}
 ${line(Boolean(state.movies.at), 'Anime Movie Italiani', `${state.movies.items.length} titoli`)}
 ${line(Boolean(state.dubbed.at), 'Anime Doppiati in Italiano', `${state.dubbed.items.length} titoli`)}
-<p>Arricchimento schede: ${enrich.stats().processed} completate, ${enrich.stats().pending} in coda.</p>
+<p>Arricchimento schede: ${enrich.stats().processed} completate, ${enrich.stats().pending} in coda · gruppi stagioni in cache: ${seasons.stats().cached}.</p>
 ${state.lastError ? `<p class="warn">Ultimo errore: ${state.lastError}</p>` : ''}
 
 <h2>Endpoint</h2>
@@ -807,6 +1001,7 @@ function health(req, res) {
     ageMin: ageMin(s.at),
     error: s.error,
   });
+  const today = store.scheduleToday();
   return json(res, {
     ok: Boolean(state.latest.at || state.movies.at),
     uptimeSec: Math.round(process.uptime()),
@@ -817,26 +1012,38 @@ function health(req, res) {
     catalogs: {
       latest: bucket(state.latest),
       schedule: {
-        ...bucket(state.schedule),
-        today: state.schedule.today,
+        count: liveScheduleItems().length,
+        refreshedAt: stamp(state.schedule.at),
+        ageMin: ageMin(state.schedule.at),
+        error: state.schedule.error,
         weekStart: state.schedule.weekStart,
-        todayWithTime: state.schedule.timedCount || 0,
+        today: today
+          ? {
+              date: today.date,
+              label: today.label,
+              count: today.items.length,
+              withTime: today.items.filter((i) => i.time).length,
+            }
+          : null,
+        indeterminate: (state.schedule.indeterminate || []).length,
+        hero: state.schedule.hero || null,
         includeIndeterminate: config.includeIndeterminate,
       },
       movies: bucket(state.movies),
       dubbed: bucket(state.dubbed),
     },
+    seasons: seasons.stats(),
+    external: external.stats(),
     enrich: enrich.stats(),
     sweeper: sweep.get(),
-    easyStreams:
-      config.easyStreamsUrl
-        ? {
-            enabled: true,
-            cacheEntries: easyStreamsCache.size,
-            negCacheEntries: easyStreamsNegCache.size,
-            ...easyStreamsStats,
-          }
-        : { enabled: false },
+    // Le fonti aggiuntive EasyStreams non vengono piu' interrogate: /stream
+    // restituisce solo lo streaming diretto di AnimeWorld.
+    easyStreams: {
+      enabled: false,
+      cacheEntries: easyStreamsCache.size,
+      negCacheEntries: easyStreamsNegCache.size,
+      ...easyStreamsStats,
+    },
   });
 }
 

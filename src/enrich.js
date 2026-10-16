@@ -3,6 +3,7 @@
 const config = require('./config');
 const { getAnimePage } = require('./aw/play');
 const { enrichFor: kitsuEnrich } = require('./kitsu');
+const seasons = require('./seasons');
 
 /**
  * Arricchimento progressivo in background.
@@ -25,12 +26,21 @@ const ENRICH_SLUG_TIMEOUT_MS = Number(process.env.ENRICH_SLUG_TIMEOUT_MS || 6000
 
 const pending = [];
 const queued = new Set();
+// Slug dei cataloghi EPISODICI (ultimi episodi + calendario): per questi la coda
+// costruisce in anticipo anche il gruppo multi-stagione.
+const episodic = new Set();
 let processed = 0;
 let failed = 0;
 let running = false;
 let timer = null;
 
 const stats = () => ({ pending: pending.length, processed, failed, running });
+
+/** Segnala gli slug dei cataloghi episodici (ricostruito a ogni refresh). */
+function markEpisodic(slugs) {
+  episodic.clear();
+  for (const slug of slugs || []) if (slug) episodic.add(slug);
+}
 
 /** Accoda gli slug ancora da arricchire (ignora quelli gia' in coda). */
 function enqueue(slugs) {
@@ -77,6 +87,16 @@ async function run(budget = BUDGET) {
             console.warn(`[enrich] kitsu fallito ${slug}: ${err.message}`);
           }
         }
+        // Serie dei cataloghi episodici: pre-costruisci il gruppo di stagioni
+        // (pagina + pagine affini in cache 6h), cosi' la scheda si apre subito
+        // con TUTTE le stagioni e i dettagli per episodio.
+        if (config.seasonsEnabled && episodic.has(slug)) {
+          try {
+            await seasons.getSeriesBundle(slug, { priority: false });
+          } catch (err) {
+            console.warn(`[enrich] stagioni fallite ${slug}: ${err.message}`);
+          }
+        }
         processed += 1;
         done += 1;
       } catch (err) {
@@ -114,6 +134,7 @@ function stop() {
 const reset = () => {
   pending.length = 0;
   queued.clear();
+  episodic.clear();
 };
 
-module.exports = { enqueue, run, start, stop, stats, trim, reset };
+module.exports = { enqueue, markEpisodic, run, start, stop, stats, trim, reset };

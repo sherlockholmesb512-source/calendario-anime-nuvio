@@ -13,11 +13,13 @@ function buildManifest(baseUrl) {
   const id = config.addonId.replace(/^com\./, '');
   return {
     id,
-    version: '1.0.0',
+    version: '1.1.0',
     name: config.addonName,
     description:
       'Catalogo anime in italiano: gli ultimi episodi usciti, il calendario con le sole uscite di ' +
-      'oggi (numero episodio e orario), i movie doppiati in italiano e l’intero catalogo doppiato. ' +
+      'oggi (numero episodio, totale e orario), i movie doppiati in italiano e l’intero catalogo ' +
+      'doppiato. Ogni scheda raccoglie TUTTE le stagioni della serie con miniatura e trama ' +
+      'italiana per episodio, la data della prossima uscita e il segno di “già visto”. ' +
       'Aggiornato automaticamente ogni 5 minuti.',
     logo: `${baseUrl}/logo.png`,
     background: `${baseUrl}/background.png`,

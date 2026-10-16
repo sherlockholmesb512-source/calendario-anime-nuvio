@@ -234,6 +234,24 @@ function parseAnimePage(html, slug) {
   }
   videos.sort((a, b) => a.num - b.num);
 
+  // Sezione "Correlati": contiene le altre stagioni/sequel/prequel dell'opera
+  // (es. da "Tokyo Revengers: Tenjiku Arc" porta alle stagioni 1, 2 e 4).
+  // E' la fonte primaria per l'elenco delle stagioni, perche' non richiede
+  // richieste HTTP aggiuntive: la pagina viene gia' scaricata.
+  const related = [];
+  const relIdx = html.indexOf('<div class="title">Correlati');
+  if (relIdx >= 0) {
+    const sidebarIdx = html.indexOf('<div id="sidebar"', relIdx);
+    const region = html.slice(relIdx, sidebarIdx > relIdx ? sidebarIdx : relIdx + 12000);
+    const relRe = /<a href="\/play\/([^"/]+)"[^>]*class="name"[^>]*>([\s\S]*?)<\/a>/g;
+    let rm;
+    while ((rm = relRe.exec(region)) !== null) {
+      const relSlug = rm[1];
+      if (!relSlug || related.some((r) => r.slug === relSlug)) continue;
+      related.push({ slug: relSlug, name: toText(rm[2]) || relSlug });
+    }
+  }
+
   return {
     slug,
     notFound: false,
@@ -254,6 +272,7 @@ function parseAnimePage(html, slug) {
     malId,
     anilistId,
     videos,
+    related,
     pageUrl: `${config.awBase}/play/${slug}`,
   };
 }

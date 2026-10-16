@@ -8,7 +8,7 @@ che raccoglie i dati di **AnimeWorld** in 4 cataloghi, aggiornati automaticament
 | 1 | **Ultimi Episodi** | homepage AnimeWorld | Gli episodi appena usciti, con audio ITA/DUB e numero episodio |
 | 2 | **Calendario Anime** | `/schedule` | **Solo le uscite di oggi con orario**, con numero episodio / episodi totali |
 | 3 | **Anime Movie Italiani** | `/filter?type=4&language=it` (8 pagine) | 320 film in italiano |
-| 4 | **Anime Doppiati in Italiano** | `/filter?language=it` (26 pagine) | 1003 opere con doppiaggio italiano |
+| 4 | **Anime Doppiati in Italiano** | `/filter?language=it` (26 pagine) | 1004 opere con doppiaggio italiano |
 
 I quattro cataloghi sono dichiarati di tipo **`anime`**, così Nuvio li raccoglie nella
 sezione **Anime** di Cerca → Scopri (le schede Home diventano "… · Anime").
@@ -54,17 +54,12 @@ titolo dello stream mostra la **dimensione reale del file** misurata con una ric
 HEAD (`AnimeWorld • Streaming diretto (~440 MB)`); se il probe fallisce il titolo resta
 semplice. Niente embed o "apri sul sito": il player riproduce il file.
 
-Accanto allo stream diretto, l'addon interroga anche **EasyStreams**
-(`https://easystreams.realbestia.com/nuvio/manifest.json`, plugin Nuvio solo-stream di
-terze parti, senza cataloghi né ricerca) e restituisce in più le fonti che trova
-(torrent/http), usando l'id IMDb o Kitsu dell'anime e il formato `id:stagione:episodio`
-del protocollo Stremio. EasyStreams è lento e variabile (1-30 s, code lato provider): la
-risposta attende al massimo `EASYSTREAMS_TIMEOUT_MS` (default 15 s) e poi replica con il
-solo stream AnimeWorld; il risultato è in cache 10 minuti e gli insuccessi non vengono
-ritentati subito (cache negativa breve). L'id per EasyStreams viene ricavato al primo
-click (arricchimento Kitsu on-demand a budget breve), quindi le fonti aggiuntive
-compaiono anche senza aver mai aperto la scheda. `EASYSTREAMS_URL=''` disattiva
-l'integrazione (di default è attiva).
+**Per ogni episodio l'addon restituisce un solo flusso: lo streaming diretto di
+AnimeWorld.** Le fonti aggiuntive di terze parti (**EasyStreams**) sono
+volutamente escluse, così `/stream` risponde subito senza attendere l'addon
+terzo. Il codice di integrazione EasyStreams resta nel progetto (con le sue
+statistiche in `/health`) per una eventuale riattivazione, ma non viene più
+interrogato durante la risoluzione dello stream.
 
 Le *informazioni* (trama, voto IMDb, generi, art) arrivano dall'addon di terze parti
 **Kitsu** (`https://anime-kitsu.strem.fun`): il match sfrutta gli id MyAnimeList/AniList che
@@ -179,9 +174,10 @@ Variabili d'ambiente disponibili: vedi `.env.example`. Le principali sono
 scheda risponde subito con la trama AnimeWorld e l'arricchimento prosegue in
 background), `TMDB_API_KEY` (miniature episodio affidabili da TMDB quando
 l'addon e kitso.io non coprono il titolo; da impostare nel pannello Render),
-`EASYSTREAMS_URL` (plugin stream aggiuntivo; `''` per disattivare, di default
-`https://easystreams.realbestia.com/nuvio`), `EASYSTREAMS_TIMEOUT_MS`
-(default 15 s) e `EASYSTREAMS_NEG_CACHE_MS` (default 2 minuti).
+`SEASONS_ENABLED` (raggruppamento delle stagioni, default attivo) e
+`AIO_BASE` (endpoint AIOMetadata per stagioni/trame episodio in italiano).
+Le variabili `EASYSTREAMS_*` esistono ancora ma l'integrazione non è più
+interrogata: `/stream` restituisce solo lo streaming diretto di AnimeWorld.
 
 ---
 
@@ -209,6 +205,41 @@ Gli orari sono interpretati nel fuso `Europe/Rome`, lo stesso usato dal sito.
 
 ---
 
+## Scheda anime: tutte le stagioni, episodi e prossima uscita
+
+AnimeWorld spezza una serie in **una pagina per stagione** (spesso con un titolo
+diverso: `tokyo-revengers`, `tokyo-revengers-seiya-kessen-hen`,
+`tokyo-revengers-tenjiku-hen`, …) e a volte nella stessa stagione in più pagine
+(`<titolo> 2` e `<titolo> 2 Part 2`). L'addon **raggruppa tutte le pagine
+dell'opera in un'unica scheda**, con i numeri di stagione reali ottenuti da
+**AIOMetadata** (basato su TVDB/TMDB/MAL), che per gli anime è più affidabile di
+TMDB (dove molte stagioni sono fuse in una). Le pagine di prosecuzione
+("Part 2"/"Cour 2") vengono unite nella stessa stagione e gli episodi rinumerati
+di seguito.
+
+Per ogni episodio la scheda mostra, quando disponibili:
+
+- la **miniatura ufficiale** (still) dell'episodio,
+- la **trama in italiano**,
+- la **data di uscita** (usata dal client per marcare le stagioni e per il
+  prossimo episodio),
+- il titolo nel formato `Episodio N/total — Titolo`.
+
+La prima riga della descrizione riporta la **prossima uscita**:
+`Prossimo episodio: Ep 4 — 23 ottobre 2026`, oppure con giorno e orario quando
+compare nel calendario AnimeWorld (`Prossimo episodio: Ep 3 — oggi alle 15:30`).
+
+Gli id video usano lo slug e il numero **originali** della pagina AnimeWorld
+(`awv.<num>.<slug>`), così `/stream` risolve sempre l'episodio giusto anche
+quando è stato rinumerato dentro la stagione unita.
+
+Fonti esterne usate, in ordine di preferenza: **AIOMetadata** → **TMDB** (it-IT)
+→ **TVDB**; le chiavi hanno default integrati e sono configurabili con
+`TMDB_API_KEY` / `TVDB_API_KEY`. `SEASONS_ENABLED=false` disattiva il
+raggruppamento (torna alla sola stagione della pagina aperta).
+
+---
+
 ## Struttura
 
 ```
@@ -218,6 +249,8 @@ src/
   manifest.js         manifest.json e ID dei 4 cataloghi
   store.js            stato dei cataloghi + scheduler a 5 minuti
   enrich.js           arricchimento schede in background
+  seasons.js          raggruppamento stagioni/cour e dettagli episodio
+  external.js         client AIOMetadata / TMDB / TVDB
   ids.js              codifica/decodifica degli ID (awa./awm./awv.)
   routes.js           handler catalog/meta/stream, landing page, /health
   aw/

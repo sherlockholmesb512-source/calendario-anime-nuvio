@@ -10,6 +10,7 @@ const { buildManifest } = require('./manifest');
 const routes = require('./routes');
 const { flushExpired } = require('./aw/play');
 const kitsu = require('./kitsu');
+const seasons = require('./seasons');
 const sweep = require('./sweep');
 
 const app = express();
@@ -110,6 +111,7 @@ async function bootstrap() {
       // cataloghi episodici (calendario e ultimi episodi, prioritarie), poi le
       // opere di movie/doppiati. La coda lavora a 6 slug ogni 20 s, quindi il
       // catalogo intero si arricchisce in modo progressivo nelle ore successive.
+      enrich.markEpisodic(store.episodicSlugs());
       const added = enrich.enqueue(allCatalogSlugs());
       console.log(`[avvio] ${added} schede in coda per l'arricchimento`);
     })
@@ -121,6 +123,7 @@ async function bootstrap() {
   // A ogni refresh accodiamo anche le nuove schede arrivate.
   const hook = setInterval(
     () => {
+      enrich.markEpisodic(store.episodicSlugs());
       enrich.enqueue(allCatalogSlugs());
     },
     config.refreshMs,
@@ -136,17 +139,20 @@ async function bootstrap() {
     const sweeper = setInterval(() => {
       const pages = flushExpired();
       const kitsuSwept = kitsu.flushExpired();
-      const reenqueued = enrich.enqueue(pages.evicted.concat(kitsuSwept.evicted));
+      const bundles = seasons.flushExpired();
+      const reenqueued = enrich.enqueue(pages.evicted.concat(kitsuSwept.evicted, bundles));
       sweep.note({
         lastAt: new Date().toISOString(),
         pages: pages.pages,
         streams: pages.streams,
         kitsu: kitsuSwept.slug,
+        bundles: bundles.length,
         reenqueued,
       });
       console.log(
         `[sweep] voci scadute rimosse: ${pages.pages} pagine, ${pages.streams} stream, ` +
-          `${kitsuSwept.slug} kitsu, ${kitsuSwept.tmdb} tmdb — ${reenqueued} schede ri-accodate`,
+          `${kitsuSwept.slug} kitsu, ${kitsuSwept.tmdb} tmdb, ${bundles.length} gruppi stagioni ` +
+          `— ${reenqueued} schede ri-accodate`,
       );
     }, config.cacheSweepMs);
     if (sweeper.unref) sweeper.unref();
@@ -156,8 +162,7 @@ async function bootstrap() {
 /** Slug unici di tutti e 4 i cataloghi (per la coda di arricchimento). */
 function allCatalogSlugs() {
   return [
-    ...store.state.schedule.items.map((i) => i.slug),
-    ...store.state.latest.items.map((i) => i.slug),
+    ...store.episodicSlugs(),
     ...store.state.movies.items.map((i) => i.slug),
     ...store.state.dubbed.items.map((i) => i.slug),
   ];

@@ -66,19 +66,49 @@ module.exports = {
   // non le fornisce. 0/'' per disattivare il fallback.
   kitsuApiBase: process.env.KITSU_API_BASE || 'https://kitsu.io/api/edge',
 
-  // TMDB API (chiave opzionale da Render): fonti AFFIDABILI per le miniature
-  // degli episodi (still per episodio) al posto della catena kitso.io/metahub
-  // che da Render puo' non confluire. Serve solo TMDB_API_KEY in env; i dati
-  // restano pubblici, la chiave identifica l'app. '' = fonte disattivata.
-  tmdbApiKey: process.env.TMDB_API_KEY || '',
+  // TMDB API: fonte secondaria per le miniature degli episodi (still per
+  // episodio) e per le trame in italiano quando AIOMetadata non risponde.
+  tmdbApiKey: process.env.TMDB_API_KEY || '04fb466f7dc90ca105e00debcaa7cf8a',
+
+  // TheTVDB v4 (chiave dell'utente): serve da riserva per la struttura delle
+  // stagioni quando AIOMetadata e TMDB non danno risultati.
+  tvdbApiKey: process.env.TVDB_API_KEY || '99d46f0a-5db5-4191-8f0d-876e8c0625d6',
+
+  // AnimeSkip (guide/trascrizioni episodi) e MDBList: conservati per uso futuro,
+  // l'addon non li interroga ancora attivamente.
+  animeskipKey: process.env.ANIMESKIP_KEY || 'Md2KLZeMTCzCb4QM7B735Q1Zt48l9tPj',
+  mdblistKey: process.env.MDBLIST_KEY || 'ct7r2fww0x0s95oyaz7dc8apj',
+
+  // -------------------------------------------------------------------------
+  // Stagioni multiple + dettagli episodio
+  // -------------------------------------------------------------------------
+
+  // AIOMetadata (addon di terze parti basato su TVDB/TMDB/MAL): e' la fonte
+  // migliore per gli anime perche' conosce le STAGIONI REALI (su TMDB molte
+  // stagioni anime sono fuse in una sola) e offre titolo, trama italiana,
+  // miniature e data di uscita di ogni singolo episodio.
+  aiomBase:
+    process.env.AIO_BASE === undefined
+      ? 'https://aiometadata.fortheweak.cloud/stremio/b297adf1-6269-4ac4-9b59-813deef624bd'
+      : (process.env.AIO_BASE || ''),
+  aiomEnabled: process.env.AIO_ENABLED !== 'false',
+  aiomTimeoutMs: Number(process.env.AIO_TIMEOUT_MS || 15000),
+  aiomCacheMs: minutes(24),
+
+  // Raggruppamento delle stagioni AnimeWorld: quando una serie ha piu' pagine
+  // (sequel/prequel) la scheda le unisce tutte in un solo elenco episodi.
+  seasonsEnabled: process.env.SEASONS_ENABLED !== 'false',
+  // Quante pagine di stagioni affini scaricare per serie (le pagine restano in
+  // cache 6 ore, quindi e' un costo una tantum per stagione).
+  maxSeasonPages: Number(process.env.MAX_SEASON_PAGES || 5),
+  // Quanto a lungo resta valida la risoluzione del gruppo di stagioni.
+  bundleCacheMs: Number(process.env.BUNDLE_CACHE_MS || minutes(12)),
 
   // Fonti stream AGGIUNTIVE da EasyStreams (addon solo-stream italiano di
-  // terze parti): accanto allo streaming diretto AnimeWorld, ogni episodio
-  // espone anche i flussi risolti da EasyStreams (torrent/http). Imposta
-  // EASYSTREAMS_URL='' per disattivare; di default usa il plugin Nuvio
-  // (https://easystreams.realbestia.com/nuvio/manifest.json), che risponde
-  // anche alle rotte /stream Stremio. Il suffisso "id:stagione:episodio"
-  // segue il protocollo Stremio.
+  // terze parti). ATTUALMENTE NON USATE: /stream restituisce SOLO lo streaming
+  // diretto di AnimeWorld (l'utente vuole il solo primo flusso). Il codice di
+  // integrazione resta qui per una eventuale riattivazione; il suffisso
+  // "id:stagione:episodio" segue il protocollo Stremio.
   easyStreamsUrl:
     process.env.EASYSTREAMS_URL === undefined
       ? 'https://easystreams.realbestia.com/nuvio'
