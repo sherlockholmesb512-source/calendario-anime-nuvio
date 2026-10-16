@@ -244,21 +244,32 @@ raggruppamento (torna alla sola stagione della pagina aperta).
 
 ## Trailer con sottotitoli in italiano
 
-Nella scheda compare il pulsante **Trailer**. Per avere trailer *sottotitolati in
-italiano* l'addon cerca su YouTube `<titolo> trailer italiano` e tiene i risultati
-dei canali italiani di anime (**Crunchyroll Italia**, **Yamato Video**, **Dynit**,
-**Anime Factory**, **Star Comics**, **VVVVID**, ...) o con keyword italiane
-(`sub ita`, `sottotitolato`, ...). I risultati chiaramente estranei o non-trailer
-(episodi, sigle, AMV, "concept"/live-action amatoriali, video lunghi) vengono
-scartati.
+Nella scheda compare il pulsante **Trailer**. Attenzione: Nuvio/Stremio
+riproducono i trailer con il player di **YouTube** e **non** possono allegare un
+file di sottotitoli esterno. Quindi l'italiano si vede/sente solo se è *nell'audio*
+(trailer **doppiato**) o se è *inciso nel video* ("sub ITA" hardsub). Per questo
+l'addon cerca su YouTube `<titolo> trailer italiano` e ordina i risultati per
+"quanto sono fruibili in italiano":
+
+1. trailer **doppiato in italiano** (`dub ita`, `doppiato`, ...);
+2. trailer **sottotitolato in italiano** (`sub ita`, `sottotitolato`, di norma
+   con sottotitoli incisi);
+3. trailer dei canali italiani di anime (**Crunchyroll Italia**, **Yamato Video**,
+   **Dynit**, **Anime Factory**, **Star Comics**, **VVVVID**, ...;
+4. altrimenti il trailer incorporato da **AnimeWorld** (di norma il PV giapponese,
+   senza sottotitoli italiani).
+
+Se il titolo completo non trova nulla (nomi lunghi tipo *"…: War of the Three
+Titan Arc (ITA)"*) l'addon ripete la ricerca col titolo **base** (prima dei `:` e
+senza parentesi). I risultati chiaramente estranei o non-trailer (episodi, sigle,
+AMV, "concept"/live-action amatoriali, video lunghi) vengono scartati.
 
 La ricerca è **best-effort** e non rallenta l'apertura della scheda: `/meta`
 aspetta al massimo ~3,5 s (regolabile con `META_TRAILER_TIMEOUT_MS`); se YouTube è
-lento la scheda risponde subito col trailer incorporato da **AnimeWorld** (di norma
-il PV giapponese) e la ricerca prosegue in background, pronta per la richiesta
-successiva. Impostazioni: `TRAILERS_ENABLED=false` per disattivare i trailer,
-`TRAILERS_MAX` (default 3) per il numero massimo mostrato, `TRAILERS_CACHE_MS`
-(default 24 h) per la durata della cache per titolo.
+lento la scheda risponde subito col trailer incorporato da **AnimeWorld** e la
+ricerca prosegue in background, pronta per la richiesta successiva. Impostazioni:
+`TRAILERS_ENABLED=false` per disattivare i trailer, `TRAILERS_MAX` (default 3) per
+il numero massimo mostrato, `TRAILERS_CACHE_MS` (default 24 h) per la cache.
 
 ---
 

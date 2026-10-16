@@ -13,7 +13,7 @@ function buildManifest(baseUrl) {
   const id = config.addonId.replace(/^com\./, '');
   return {
     id,
-    version: '1.2.0',
+    version: '1.2.1',
     name: config.addonName,
     description:
       'Catalogo anime in italiano: gli ultimi episodi usciti, il calendario con le sole uscite di ' +

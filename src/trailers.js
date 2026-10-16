@@ -6,12 +6,14 @@
  * Stremio/Nuvio mostrano il pulsante "Trailer" solo se il meta contiene
  * l'array `trailers: [{ source: <id YouTube>, type: 'Trailer' }]`.
  *
- * Per avere i trailer SOTTOTITOLATI IN ITALIANO la fonte affidabile sono i
- * canali italiani che li pubblicano (Crunchyroll Italia, Yamato Video, Dynit,
- * Anime Factory, ...): si cerca su YouTube "<titolo> trailer italiano" e si
- * scelgono i risultati di quei canali / con keyword italiane. Come ultima
- * riserva si usa il trailer che AnimeWorld incorpora nella propria pagina
- * (di norma il PV giapponese, senza sottotitoli ITA).
+ * Nuvio riproduce i trailer con il player di YouTube e NON puo' allegare un
+ * file di sottotitoli esterno: l'italiano quindi si vede/sente solo se e'
+ * nell'audio (trailer DOPPIATO) o se e' inciso nel video (sottotitoli "hardsub").
+ * Per questo la ricerca YouTube "<titolo> trailer italiano" privilegia, in
+ * ordine: trailer DUB ITA, trailer SUB ITA (di norma hardsub), poi i canali
+ * italiani ufficiali (Crunchyroll Italia, Yamato Video, Dynit, Anime Factory,
+ * ...). Come ultima riserva si usa il trailer che AnimeWorld incorpora nella
+ * propria pagina (di norma il PV giapponese, senza sottotitoli ITA).
  *
  * Tutto "best effort": qualunque errore/timeout restituisce semplicemente i
  * trailer disponibili (anche nessuno) senza bloccare la scheda.
@@ -155,6 +157,42 @@ function sameShow(queryTokens, videoTitle, channel) {
   return matched >= Math.min(2, queryTokens.length);
 }
 
+// Quanto e' "fruibile in italiano" un trailer. Conta piu' del punteggio perche'
+// Nuvio NON puo' allegare sottotitoli esterni a un trailer YouTube: l'italiano
+// si vede/sente solo se e' nell'audio (DUB ITA) o inciso nel video (SUB ITA).
+//   3 = doppiato in italiano (audio ITA)
+//   2 = sottotitolato in italiano, di norma con sottotitoli incisi (SUB ITA)
+//   1 = canale italiano ufficiale (spesso doppiato)
+//   0 = nessun elemento italiano
+function itTier(v) {
+  const t = v.title.toLowerCase();
+  const ch = v.channel.toLowerCase();
+  if (/\bdub ?ita\b|doppiat|doppiagg/.test(t)) return 3;
+  if (/sub ?ita|sottotitol/.test(t)) return 2;
+  if (/\bita\b|\bitalian[oa]\b/.test(t)) return 2;
+  if (TRUSTED_CHANNELS.some((c) => ch.includes(c))) return 1;
+  return 0;
+}
+
+/**
+ * Query di ricerca da provare, dalla piu' specifica alla piu' generica. Il
+ * titolo completo ("Tokyo Revengers: War of the Three Titan Arc (ITA)") spesso
+ * non trova nulla, mentre il titolo base ("Tokyo Revengers") si'.
+ */
+function candidateQueries(title) {
+  const out = [];
+  const push = (q) => {
+    const v = String(q || '').replace(/\s{2,}/g, ' ').trim();
+    if (v && !out.some((x) => x.toLowerCase() === v.toLowerCase())) out.push(v);
+  };
+  push(title);
+  const base = String(title || '')
+    .replace(/\s*[([][^)\]]*[)\]]\s*/g, ' ') // via parentesi e loro contenuto
+    .split(':')[0];
+  if (base && base.trim().length >= 4) push(base);
+  return out;
+}
+
 /** Punteggio: alto = probabile trailer ufficiale sottotitolato in italiano. */
 function score(v) {
   const ch = v.channel.toLowerCase();
@@ -210,27 +248,35 @@ async function getTrailers(page = {}) {
 
   const found = title
     ? await memoTtl(`yt:${title.toLowerCase()}`, config.trailersCacheMs, async () => {
-        const results = await searchYouTube(`${title} trailer italiano`);
         const queryTokens = tokens(title);
-        const ranked = results
-          .map((v) => ({ ...v, s: score(v) }))
-          .filter(
-            (v) =>
-              v.s >= 6 &&
-              TRAILER_RE.test(v.title) &&
-              sameShow(queryTokens, v.title, v.channel),
-          )
-          .sort((a, b) => b.s - a.s);
+        // Prova prima il titolo completo, poi (se non trova nulla) il titolo
+        // base senza sottotitolo/parentesi: copre le schede con nomi lunghi.
+        for (const q of candidateQueries(title)) {
+          const results = await searchYouTube(`${q} trailer italiano`);
+          const ranked = results
+            .map((v) => ({ ...v, s: score(v), tier: itTier(v) }))
+            .filter(
+              (v) =>
+                v.s >= 6 &&
+                v.tier >= 1 &&
+                TRAILER_RE.test(v.title) &&
+                sameShow(queryTokens, v.title, v.channel),
+            )
+            // Prima i trailer fruibili in italiano (doppiato o con sottotitoli
+            // incisi), poi quelli dei canali italiani ufficiali, poi il resto.
+            .sort((a, b) => b.tier - a.tier || b.s - a.s);
 
-        const picked = [];
-        const seen = new Set();
-        for (const v of ranked) {
-          if (seen.has(v.id)) continue;
-          seen.add(v.id);
-          picked.push({ source: v.id, type: 'Trailer' });
-          if (picked.length >= config.trailersMax) break;
+          const picked = [];
+          const seen = new Set();
+          for (const v of ranked) {
+            if (seen.has(v.id)) continue;
+            seen.add(v.id);
+            picked.push({ source: v.id, type: 'Trailer' });
+            if (picked.length >= config.trailersMax) break;
+          }
+          if (picked.length) return picked;
         }
-        return picked;
+        return [];
       })
     : null;
 
