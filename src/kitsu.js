@@ -19,6 +19,7 @@
 
 const config = require('./config');
 const { seasonOf } = require('./ids');
+const imdbIds = require('./imdbIds');
 
 const BASE = config.kitsuBase;
 const TTL = config.kitsuCacheMs;
@@ -587,6 +588,11 @@ async function enrichFor(slug, page) {
   }
   failMark.delete(slug);
 
+  // L'IMDb e' l'unico id che Nuvio puo' passare a Trakt ("id Trakt compatibili
+  // mancanti" con awa.<slug>): appena noto viene registrato nell'indice
+  // condiviso, cosi' cataloghi e scheda espongono tt... al posto dello slug.
+  if (meta && meta.imdbId) imdbIds.remember(slug, meta.imdbId);
+
   // Stagione dello slug AnimeWorld: i sequel sono "<titolo>-<N>-ita". La
   // summary Kitsu e' per id dell'addon (condivisa fra le stagioni): per i
   // sequel sostituiamo thumbnail e trame con quelle della stagione giusta di
@@ -658,6 +664,7 @@ function mergeWithPage(page, info) {
     episodeOverviews: info.episodeOverviews || null,
     cast: info.cast && info.cast.length ? info.cast : null,
     kitsuId: info.kitsuId || null,
+    imdbId: info.imdbId || null,
   };
 }
 

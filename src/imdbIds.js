@@ -143,11 +143,125 @@ async function resolveSlug(imdb) {
   return task;
 }
 
+// ---------------------------------------------------------------------------
+// Ricerca automatica dell'IMDb per TITOLO (TMDB): copre gli slug per i quali
+// l'addon Kitsu non espone l'imdb_id. TMDB /search + /external_ids danno
+// l'IMDb ufficiale; il match privilegia le opere giapponesi e l'anno vicino.
+// ---------------------------------------------------------------------------
+
+const TMDB_TIMEOUT = 10000;
+const ensureInflight = new Map(); // slug -> Promise<imdb|null>
+
+async function tmdbJson(path) {
+  const key = config.tmdbApiKey;
+  if (!key) return null;
+  const sep = path.includes('?') ? '&' : '?';
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TMDB_TIMEOUT);
+  try {
+    const res = await fetch(`${TMDB}${path}${sep}api_key=${encodeURIComponent(key)}`, {
+      signal: ctrl.signal,
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Titolo pulito per la ricerca TMDB: i suffissi di edizione di AnimeWorld
+ * "(ITA)", "(SUB ITA)", "(DOPPIATO)" manderebbero la query a vuoto.
+ */
+const cleanTitle = (t) =>
+  String(t || '')
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .replace(/\b(ITA|SUB|DOP|DOPPIATO|SOTTOTITOLATO)\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+/** Miglior risultato TMDB: preferisce l'originale giapponese e l'anno vicino. */
+function pickTmdbResult(results, year) {
+  const yr = Number(year) || 0;
+  const scored = (results || [])
+    .filter((r) => r && r.id)
+    .map((r) => {
+      const rYear =
+        Number(String(r.first_air_date || r.release_date || '').slice(0, 4)) || 0;
+      return {
+        r,
+        langOk: (r.original_language || '').toLowerCase() === 'ja',
+        d: yr && rYear ? Math.abs(yr - rYear) : 0,
+      };
+    })
+    .sort((a, b) => (a.langOk === b.langOk ? a.d - b.d : a.langOk ? -1 : 1));
+  return scored[0] ? scored[0].r : null;
+}
+
+/**
+ * IMDb per titolo+anno via TMDB (cerca prima nel tipo suggerito, poi nell'altro).
+ * Ritorna "tt..." o null; nessuna eccezione verso l'esterno.
+ */
+async function tmdbImdbForTitle(title, year, type) {
+  const clean = cleanTitle(title);
+  if (!clean || !config.tmdbApiKey) return null;
+  const q = encodeURIComponent(clean);
+  const yr = Number(year) || '';
+  const suffix = yr ? `&year=${encodeURIComponent(yr)}` : '';
+  const order = type === 'movie' ? ['movie', 'tv'] : ['tv', 'movie'];
+  for (const kind of order) {
+    const src =
+      kind === 'tv'
+        ? await tmdbJson(`/search/tv?query=${q}${suffix}&language=en-US`)
+        : await tmdbJson(`/search/movie?query=${q}${suffix}&language=en-US`);
+    const best = pickTmdbResult(src && src.results, year);
+    if (!best) continue;
+    const ext =
+      kind === 'tv'
+        ? await tmdbJson(`/tv/${best.id}/external_ids`)
+        : await tmdbJson(`/movie/${best.id}/external_ids`);
+    const imdb = ext && ext.imdb_id;
+    if (IMDB_RE.test(String(imdb || ''))) return imdb;
+  }
+  return null;
+}
+
+/**
+ * Garantisce che uno slug abbia un IMDb: se non noto, lo cerca per titolo su
+ * TMDB e lo registra. Le chiamate concorrenti sullo stesso slug sono deduplicate.
+ */
+async function ensureForSlug(slug, page) {
+  if (!slug || !page || page.notFound) return null;
+  const known = bySlug.get(slug);
+  if (known) return known;
+  if (ensureInflight.has(slug)) return ensureInflight.get(slug);
+
+  const task = (async () => {
+    try {
+      const type = /film|movie|cinema/i.test(page.category || '') ? 'movie' : 'series';
+      const imdb = await tmdbImdbForTitle(page.title, page.year, type);
+      if (imdb) {
+        remember(slug, imdb);
+        return imdb;
+      }
+      return null;
+    } finally {
+      ensureInflight.delete(slug);
+    }
+  })();
+
+  ensureInflight.set(slug, task);
+  return task;
+}
+
 const stats = () => ({
   imdb: byImdb.size,
   slugs: bySlug.size,
   negative: negCache.size,
-  inflight: inflight.size,
+  inflight: inflight.size + ensureInflight.size,
 });
 
 function flush() {
@@ -155,6 +269,7 @@ function flush() {
   bySlug.clear();
   negCache.clear();
   inflight.clear();
+  ensureInflight.clear();
 }
 
 module.exports = {
@@ -162,6 +277,8 @@ module.exports = {
   imdbFor,
   resolvedId,
   resolveSlug,
+  tmdbImdbForTitle,
+  ensureForSlug,
   stats,
   flush,
   IMDB_RE,

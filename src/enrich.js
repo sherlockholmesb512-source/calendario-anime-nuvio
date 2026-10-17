@@ -3,6 +3,7 @@
 const config = require('./config');
 const { getAnimePage } = require('./aw/play');
 const { enrichFor: kitsuEnrich } = require('./kitsu');
+const imdbIds = require('./imdbIds');
 const seasons = require('./seasons');
 
 /**
@@ -85,6 +86,20 @@ async function run(budget = BUDGET) {
             ]);
           } catch (err) {
             console.warn(`[enrich] kitsu fallito ${slug}: ${err.message}`);
+          }
+        }
+        // IMDb per Trakt: se Kitsu non ha fornito l'imdb_id, cercalo per titolo
+        // su TMDB (due richieste veloci, in cache condivisa). Cosi' i cataloghi
+        // espongono id tt... e Nuvio puo' aggiungere l'opera alla libreria
+        // Trakt senza l'errore "id Trakt compatibili mancanti".
+        if (page && !page.notFound && config.tmdbApiKey && !imdbIds.imdbFor(slug)) {
+          try {
+            await Promise.race([
+              imdbIds.ensureForSlug(slug, page),
+              new Promise((resolve) => setTimeout(resolve, ENRICH_SLUG_TIMEOUT_MS)),
+            ]);
+          } catch (err) {
+            console.warn(`[enrich] imdb fallito ${slug}: ${err.message}`);
           }
         }
         // Serie dei cataloghi episodici: pre-costruisci il gruppo di stagioni

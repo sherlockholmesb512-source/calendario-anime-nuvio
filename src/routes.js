@@ -5,6 +5,7 @@ const store = require('./store');
 const enrich = require('./enrich');
 const { buildManifest, CAT } = require('./manifest');
 const ids = require('./ids');
+const imdbIds = require('./imdbIds');
 const { getAnimePage, getEpisodeStream, cachePeek } = require('./aw/play');
 const { getSearchItems } = require('./aw/filter');
 const { italianDayLabel, isoInItaly, timeInItaly } = require('./aw/schedule');
@@ -269,6 +270,7 @@ function lightMeta(slug, fallbackName, fallbackPoster) {
   const page = cachePeek(slug);
   if (page && !page.notFound) {
     const merged = kitsu.mergeWithPage(page, kitsu.peek(slug));
+    if (merged && merged.imdbId) imdbIds.remember(slug, merged.imdbId);
     return {
       name: page.title || fallbackName,
       // Il poster scrapato (fallbackPoster/item.poster) e' un URL reale preso
@@ -280,6 +282,7 @@ function lightMeta(slug, fallbackName, fallbackPoster) {
       year: (merged && merged.year) || page.year,
       rating: (merged && merged.rating) || page.rating,
       totalEpisodes: (merged && merged.totalEpisodes) || page.totalEpisodes,
+      imdbId: (merged && merged.imdbId) || imdbIds.imdbFor(slug) || null,
       enriched: true,
       kitsu: Boolean(merged && merged.kitsuId),
     };
@@ -292,6 +295,7 @@ function lightMeta(slug, fallbackName, fallbackPoster) {
     year: null,
     rating: null,
     totalEpisodes: null,
+    imdbId: imdbIds.imdbFor(slug) || null,
     enriched: false,
     kitsu: false,
   };
@@ -299,6 +303,16 @@ function lightMeta(slug, fallbackName, fallbackPoster) {
 
 const epLabel = (ep, total) => (total ? `Episodio ${ep}/${total}` : `Episodio ${ep}`);
 const epShort = (ep, total) => (total ? `${ep}/${total}` : `${ep}`);
+
+/**
+ * Id "pubblico" di un anime per i client: l'IMDb (`tt...`) quando noto, altrimenti
+ * il tradizionale `awa.<slug>`. Nuvio costruisce la voce di libreria (e l'id
+ * inviato a Trakt) dal campo `id` e lo considera compatibile solo se inizia con
+ * "tt": con il solo `awa.<slug>` l'aggiunta in libreria fallisce con
+ * "id Trakt compatibili mancanti". L'IMDb viene trovato dall'addon stesso
+ * (Kitsu o TMDB per titolo) e messo in cache condivisa da imdbIds.js.
+ */
+const publicId = (slug) => imdbIds.resolvedId(slug, ids.animeId(slug));
 
 // ---------------------------------------------------------------------------
 // Anteprime dei 4 cataloghi
@@ -355,7 +369,9 @@ function latestPreview(item) {
   return {
     // Id PER SERIE (stabile, non per episodio): Nuvio aggancia qui "già visto"
     // e progresso, e la scheda mostra tutta la serie con le sue stagioni.
-    id: ids.animeId(item.slug),
+    // Quando l'IMDb e' noto l'id e' "tt..." (l'unico compatibile con Trakt per
+    // la libreria); altrimenti resta il tradizionale "awa.<slug>".
+    id: publicId(item.slug),
     type: 'series',
     name: meta.name,
     poster: meta.poster || item.poster,
@@ -393,8 +409,9 @@ function schedulePreview(item, zone) {
     : `Uscita di oggi ${when}.`;
   return {
     // Id PER SERIE: come in "Ultimi Episodi", cosi' Nuvio riconosce la serie
-    // (episodi visti, lista stagioni) e non l'episodio singolo.
-    id: ids.animeId(item.slug),
+    // (episodi visti, lista stagioni) e non l'episodio singolo. L'IMDb noto
+    // rende l'id compatibile con Trakt (libreria).
+    id: publicId(item.slug),
     type: 'series',
     name: meta.name,
     poster: meta.poster || item.poster,
@@ -422,7 +439,7 @@ function animePreview(item, type) {
       : 'In italiano';
   const nextShort = isMovie ? null : nextAirShort(item.slug);
   return {
-    id: ids.animeId(item.slug),
+    id: publicId(item.slug),
     type,
     name: meta.name,
     poster: meta.poster || item.poster,
@@ -636,6 +653,23 @@ async function buildMeta(slug, type, num, baseId) {
     }
   }
   const merged = kitsu.mergeWithPage(page, kinfo) || {};
+  if (kinfo && kinfo.imdbId) imdbIds.remember(slug, kinfo.imdbId);
+
+  // Ricerca automatica dell'IMDb quando neanche Kitsu lo ha fornito: due
+  // richieste TMDB (titolo -> external ids) con budget breve. Senza IMDb la
+  // scheda non puo' essere aggiunta alla libreria Trakt ("id Trakt compatibili
+  // mancanti"): con l'id trovato meta.id diventa "tt..." e Trakt accetta.
+  if (!merged.imdbId && config.tmdbApiKey) {
+    try {
+      const quick = await Promise.race([
+        imdbIds.ensureForSlug(slug, page),
+        new Promise((resolve) => setTimeout(() => resolve(null), 2500)),
+      ]);
+      if (quick) merged.imdbId = quick;
+    } catch {
+      // la scheda resta completa anche senza IMDb
+    }
+  }
 
   // Rete di sicurezza TMDB: se l'enrich in background non ha ancora prodotto
   // thumbnail/trame episodio (es. addon lento su Render che fa perdere la corsa
@@ -763,7 +797,9 @@ async function buildMeta(slug, type, num, baseId) {
   }
 
   const meta = {
-    id: baseId,
+    // Id "pubblico": tt... (IMDb, compatibile Trakt) quando noto, awa.<slug>
+    // come ripiego. Gli episodi sotto restano con id awv... della propria pagina.
+    id: imdbIds.resolvedId(slug, baseId),
     type,
     name: page.title,
     poster: merged.poster || page.poster || copertine(slug),
@@ -852,6 +888,19 @@ async function handleMeta(req, res) {
   if (hit) return json(res, hit);
 
   try {
+    // Id IMDb ("tt..."): e' il modo con cui Nuvio/Trakt richiamano l'opera
+    // quando la si aggiunge in libreria o la si riapre. L'addon risolve da solo
+    // l'id -> pagina AnimeWorld (TMDB /find sul titolo inglese + ricerca
+    // AnimeWorld con match stretto), quindi funziona anche per titoli mai
+    // aperti prima: niente piu' errore "id Trakt compatibili mancanti".
+    if (imdbIds.IMDB_RE.test(id)) {
+      const slug = await imdbIds.resolveSlug(id);
+      if (!slug) return json(res, { error: `Nessun anime trovato per ${id}` }, 404);
+      const body = await buildMeta(slug, contentType, null, id);
+      metaCacheSet(cacheKey, body);
+      return json(res, body);
+    }
+
     const anime = ids.parseAnime(id);
     if (anime) {
       const body = await buildMeta(anime.slug, contentType, null, ids.animeId(anime.slug));
@@ -879,6 +928,39 @@ async function handleMeta(req, res) {
 
 /** Dall'id video sintetico risolve l'id episodio reale del player AnimeWorld. */
 async function resolveEpisodeId(videoKey) {
+  // Id IMDb ("tt...", con eventuale ":stagione:episodio" del protocollo
+  // Stremio): risolti verso l'anime AnimeWorld, cosi' /stream funziona anche
+  // quando il client usa gli id della libreria Trakt.
+  const tt = /^(tt\d+)(?::(\d+):(\d+))?$/i.exec(videoKey);
+  if (tt) {
+    const slug = await imdbIds.resolveSlug(tt[1]);
+    if (!slug) return null;
+    const seasonNum = Number(tt[2]) || null;
+    const epNum = Number(tt[3]) || null;
+    if (seasonNum && epNum) {
+      try {
+        const bundle = await seasons.getSeriesBundle(slug, { priority: true });
+        const hit = seasons.flattenEpisodes(bundle).find(
+          (e) => e.season === seasonNum && e.num === epNum,
+        );
+        if (hit) {
+          if (hit.epId) return { epId: hit.epId, slug: hit.slug };
+          const hitPage = await getAnimePage(hit.slug, { priority: true });
+          const hitList = (hitPage && hitPage.videos) || [];
+          const found = hitList.find(
+            (v) => v.num === (hit.srcNum != null ? hit.srcNum : hit.num),
+          );
+          if (found) return { epId: found.id, slug: hit.slug };
+        }
+      } catch {
+        // ripiego sull'ultimo episodio della pagina principale
+      }
+    }
+    const ttPage = await getAnimePage(slug, { priority: true });
+    const ttList = (ttPage && ttPage.videos) || [];
+    return ttList.length ? { epId: ttList[ttList.length - 1].id, slug } : null;
+  }
+
   const v = ids.parseVideo(videoKey);
   if (v) {
     // Se l'episodio e' gia' in uno dei due cataloghi episodic, non serve nulla.
@@ -1064,6 +1146,8 @@ function health(req, res) {
     external: external.stats(),
     trailers: trailers.stats(),
     enrich: enrich.stats(),
+    // Indice IMDb <-> slug: quanti titoli hanno gia' un id compatibile Trakt.
+    imdbIds: imdbIds.stats(),
     sweeper: sweep.get(),
     // Le fonti aggiuntive EasyStreams non vengono piu' interrogate: /stream
     // restituisce solo lo streaming diretto di AnimeWorld.
