@@ -47,11 +47,18 @@ module.exports = {
   // stanno esclusi. Mettendo true verrebbero aggiunti in coda a quelli di oggi.
   includeIndeterminate: process.env.INCLUDE_INDETERMINATE === 'true',
 
-  // Limite massimo di item serviti in una singola risposta di catalogo.
+  // Limite massimo di item serviti in una singola risposta di catalogo: vale sia
+  // come default (client che non chiedono nulla) sia come tetto (client che
+  // chiedono un limit piu' alto).
   // I cataloghi 3 e 4 superano di gran lunga la vecchia pagina da 60 item, e
   // i client che non paginano mai (supportSkip=false) si fermavano a meta'
-  // pagina 2. Ora l'intero catalogo arriva nella prima risposta.
-  pageSize: 1200,
+  // pagina 2: cosi' l'intero catalogo arriva nella prima risposta.
+  // 1800 e' scelto per lasciare margine al catalogo doppiati (~1000 oggi):
+  // su Render free il costo e' trascurabile (la risposta e' compressa in
+  // Brotli, ~30 KB per il catalogo intero) e il tempo di risposta non dipende
+  // dal numero di item. Oltre ~2000 il limite diventa il client, che ridisegna
+  // tutta la lista a ogni apertura (le risposte sono no-store).
+  pageSize: 1800,
 
   // Arricchimento dei metadati dall'addon di terze parti Kitsu
   // (https://anime-kitsu.strem.fun/manifest.json): descrizioni, voto IMDb,

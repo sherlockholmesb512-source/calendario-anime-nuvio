@@ -250,9 +250,11 @@ const META_ENRICH_WAIT = Symbol('meta-enrich-wait');
 const META_TRAILER_TIMEOUT_MS = Number(process.env.META_TRAILER_TIMEOUT_MS || 3500);
 const META_TRAILER_WAIT = Symbol('meta-trailer-wait');
 
+// Il tetto per singola risposta e' config.pageSize: unico punto da toccare per
+// servire piu' (o meno) item in una volta.
 function paginate(items, skip, limit) {
   const from = Math.max(0, Number(skip) || 0);
-  const size = Math.min(Math.max(Number(limit) || config.pageSize, 1), 1200);
+  const size = Math.min(Math.max(Number(limit) || config.pageSize, 1), config.pageSize);
   return items.slice(from, from + size);
 }
 
