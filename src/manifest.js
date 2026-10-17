@@ -13,7 +13,7 @@ function buildManifest(baseUrl) {
   const id = config.addonId.replace(/^com\./, '');
   return {
     id,
-    version: '1.2.1',
+    version: '1.3.0',
     name: config.addonName,
     description:
       'Catalogo anime in italiano: gli ultimi episodi usciti, il calendario con le sole uscite di ' +
@@ -24,7 +24,7 @@ function buildManifest(baseUrl) {
     logo: `${baseUrl}/logo.png`,
     background: `${baseUrl}/background.png`,
     types: ['movie', 'series', 'anime'],
-    idPrefixes: ['awa', 'awm', 'awv'],
+    idPrefixes: ['awa', 'awm', 'awv', 'tt'],
     resources: ['catalog', 'meta', 'stream'],
     // I cataloghi sono dichiarati di tipo "anime": e' il tipo media che Nuvio
     // usa per raggrupparli nella sezione Anime di Cerca/Scopri. I singoli
