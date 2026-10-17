@@ -1,0 +1,58 @@
+name: Aggiorna mappa IMDb
+
+# Rigenera data/imdb-map.json (slug AnimeWorld -> id IMDb) e la committa se
+# cambia. Serve a mantenere pronta la copertura Trakt anche per gli anime
+# aggiunti dopo l'ultima generazione: l'istanza Render ha memoria effimera e
+# senza la mappa la coda di arricchimento impiegherebbe ore a riconquistare i
+# tt... uno a uno.
+#
+# Nota: lo script ha una guardia anti-regressione. Se AnimeWorld risponde male
+# (es. blocco degli IP dei runner) la mappa NON viene sovrascritta e il job
+# fallisce, lasciando intatto il file precedente.
+
+on:
+  schedule:
+    # Ogni lunedi' alle 03:17 UTC (05:17 in Italia): momento di poco traffico.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: imdb-map
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Dipendenze
+        run: npm install --no-audit --no-fund
+
+      - name: Rigenera la mappa
+        env:
+          MAP_CONCURRENCY: '8'
+          KITSU_TIMEOUT_MS: '8000'
+          HTTP_TIMEOUT_MS: '15000'
+        run: npm run map
+
+      - name: Committa se cambiata
+        run: |
+          if git diff --quiet -- data/imdb-map.json; then
+            echo "Mappa invariata: nessun commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/imdb-map.json
+          git commit -m "chore: aggiorna la mappa IMDb ($(date -u +%Y-%m-%d))"
+          git push
