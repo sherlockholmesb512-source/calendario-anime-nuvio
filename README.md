@@ -115,6 +115,24 @@ AnimeWorld (che contengono caratteri non validi) vengono rincapsulati:
 Gli slug AnimeWorld sono della forma `<nome-slug>.<animeId>`, quindi dividere sui punti
 è inequivocabile (`src/ids.js`).
 
+Per la **libreria Trakt** Nuvio usa il campo `id` della scheda e lo considera compatibile
+con Trakt **solo se inizia con `tt`** (IMDb): con il solo `awa.<slug>` l'aggiunta in libreria
+fallisce con *"id Trakt compatibili mancanti"*. L'addon risolve da sé: quando l'IMDb è noto,
+catalogo e scheda espongono `tt<imdb>`, altrimenti restano su `awa.<slug>` (che continua a
+funzionare). L'id viene cercato in cascata — id **AniList/MAL** della pagina AnimeWorld →
+addon **Kitsu** (`imdb_id`) → ricerca **TMDB** per titolo+anno (`/find`, `/search` +
+`external_ids`) — e conservato in `src/imdbIds.js`. Anche `/meta` e `/stream` accettano gli
+id `tt...` (con eventuale suffisso `:stagione:episodio`) risolvendoli verso la pagina
+AnimeWorld, così la deep link della libreria funziona anche per un titolo mai aperto prima.
+
+La corrispondenza è in memoria ma anche **precalcolata nel repo** in
+`data/imdb-map.json` (rigenerabile con `npm run map`; la GitHub Action
+`.github/workflows/update-imdb-map.yml` la aggiorna ogni lunedì e su richiesta
+manuale, committando solo se cambia): l'istanza Render del piano free è
+effimera, quindi a ogni deploy/riavvio la mappa evita di riconquistare uno a uno i
+~1.400 `tt...` (la coda impiegherebbe ore). La copertura è quindi immediata al primo avvio,
+e la coda di arricchimento continua comunque ad aggiungere e aggiornare le voci nuove.
+
 ---
 
 ## Avvio in locale
@@ -134,6 +152,7 @@ npm run smoke        # scraping diretto, senza server
 npm run http         # flusso addon completo via HTTP (serve un server attivo)
 npm run http -- http://127.0.0.1:7000
 npm run test:kitsu   # arricchimento metadati dall'addon Kitsu (richiede rete)
+npm run map          # rigenera data/imdb-map.json (id IMDb dei 4 cataloghi)
 npm run assets       # rigenera public/logo.png e public/background.png
 ```
 
@@ -286,6 +305,7 @@ src/
   external.js         client AIOMetadata / TMDB / TVDB
   trailers.js         trailer (YouTube, canali italiani) + riserva AnimeWorld
   ids.js              codifica/decodifica degli ID (awa./awm./awv.)
+  imdbIds.js          indice IMDb <-> slug + mappa precalcolata per Trakt
   routes.js           handler catalog/meta/stream, landing page, /health
   aw/
     http.js           coda, rate limit, retry, token CSRF, decodifica charset
@@ -297,7 +317,10 @@ src/
 scripts/
   smoke-test.js       test dei 4 cataloghi senza server
   http-test.js        test end-to-end del protocollo addon
+  build-imdb-map.js   genera data/imdb-map.json (id IMDb dei cataloghi)
   generate-assets.js  generazione di logo e sfondo
+data/
+  imdb-map.json       mappa precalcolata slug -> id IMDb (copertura immediata)
 public/
   logo.png  background.png
 ```

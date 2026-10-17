@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node src/index.js",
+    "map": "node scripts/build-imdb-map.js",
     "smoke": "node scripts/smoke-test.js",
     "http": "node scripts/http-test.js",
     "test:kitsu": "node scripts/kitsu-test.js",

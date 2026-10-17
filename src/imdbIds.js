@@ -20,9 +20,13 @@
  * prima stagione disponibile.
  */
 
+const fs = require('fs');
+const path = require('path');
+
 const config = require('./config');
 const { getSearchItems } = require('./aw/filter');
 const { normalize, stripAudio } = require('./text');
+const { seasonOf } = require('./ids');
 
 const IMDB_RE = /^tt\d+$/;
 const NEG_TTL = 30 * 60 * 1000;
@@ -41,6 +45,53 @@ function trim(map) {
     map.delete(first);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Mappa PRECALCOLATA (data/imdb-map.json)
+//
+// Generata una volta da scripts/build-imdb-map.js e committata nel repo. Serve
+// perche' l'indice vive in memoria e l'istanza Render (piano free) e' effimera:
+// a ogni deploy/riavvio/sleep i tt... andrebbero riconquistati uno a uno dalla
+// coda (ore per i 1.300 titoli di movie/doppiati). Con la mappa in repo la
+// copertura e' immediata al 100% fin dal primo avvio; la coda di arricchimento
+// continua comunque ad aggiungere e aggiornare le voci nuove a runtime.
+// ---------------------------------------------------------------------------
+
+const MAP_FILE = path.join(__dirname, '..', 'data', 'imdb-map.json');
+let mapInfo = { loaded: 0, generatedAt: null, error: null };
+
+/**
+ * Carica la mappa precalcolata (idempotente). Per lo slug vince l'ultima voce
+ * letta; per l'IMDb si preferisce la PRIMA stagione, perche' i sequel
+ * condividono lo stesso tt e il deep link imdb -> slug deve puntare all'opera
+ * principale.
+ */
+function loadMap(file = MAP_FILE) {
+  try {
+    if (!fs.existsSync(file)) {
+      mapInfo = { loaded: 0, generatedAt: null, error: null };
+      return mapInfo;
+    }
+    const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+    const raw = JSON.parse(text);
+    const entries = raw && raw.map && typeof raw.map === 'object' ? raw.map : {};
+    let loaded = 0;
+    for (const [slug, imdb] of Object.entries(entries)) {
+      const id = String(imdb || '').trim();
+      if (!slug || !IMDB_RE.test(id)) continue;
+      bySlug.set(slug, id);
+      const current = byImdb.get(id);
+      if (!current || seasonOf(slug) < seasonOf(current)) byImdb.set(id, slug);
+      loaded += 1;
+    }
+    mapInfo = { loaded, generatedAt: raw.generatedAt || null, error: null };
+  } catch (err) {
+    mapInfo = { loaded: 0, generatedAt: null, error: err.message };
+  }
+  return mapInfo;
+}
+
+loadMap();
 
 /** Registra la corrispondenza slug <-> imdb (se l'id e' un IMDb valido). */
 function remember(slug, imdb) {
@@ -203,28 +254,71 @@ function pickTmdbResult(results, year) {
 
 /**
  * IMDb per titolo+anno via TMDB (cerca prima nel tipo suggerito, poi nell'altro).
+ * Cerca in italiano E in inglese — i titoli AnimeWorld sono spesso rinomati in
+ * italiano (es. "Mila e Shiro", "Battle Spirits") e non matchano il titolo
+ * originale — e, quando il filtro anno non trova nulla, ritenta senza: per gli
+ * anime la prima messa in onda spesso cade in un anno diverso da quello atteso.
  * Ritorna "tt..." o null; nessuna eccezione verso l'esterno.
  */
+const TITLE_STOP = new Set([
+  'ita', 'sub', 'dub', 'the', 'and', 'of', 'il', 'lo', 'la', 'gli', 'le', 'un', 'una', 'uno',
+  'di', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'al', 'del', 'dello', 'della', 'dei',
+  'degli', 'delle', 'e', 'ed', 'a', 'o', 'od', 'movie', 'film', 'part', 'parte', 'season',
+  'stagione', 'tv', 'special', 'ova', 'ona',
+]);
+
+/** Token "significativi" di un titolo (per confrontare query e risultato TMDB). */
+const titleTokens = (text) =>
+  normalize(text)
+    .split(' ')
+    .filter((t) => t.length > 2 && !TITLE_STOP.has(t));
+
+/**
+ * Il risultato TMDB somiglia davvero al titolo cercato? Serve a non assegnare a
+ * un anime l'IMDb di un'opera diversa (omonimie, remake, serie invece del film):
+ * accettiamo se c'e' almeno un token significativo in comune oppure se l'anno
+ * combacia esattamente.
+ */
+function nameLooksRelated(query, cand, year) {
+  const q = titleTokens(query);
+  if (!q.length) return true; // niente su cui giudicare: ci fidiamo della ricerca
+  const hay = new Set(
+    titleTokens(
+      [cand.name, cand.title, cand.original_name, cand.original_title].filter(Boolean).join(' '),
+    ),
+  );
+  if (q.some((t) => t.length >= 4 && hay.has(t))) return true;
+  if (q.filter((t) => hay.has(t)).length >= Math.min(2, q.length)) return true;
+  const qYear = Number(year) || 0;
+  const cYear = Number(String(cand.first_air_date || cand.release_date || '').slice(0, 4)) || 0;
+  return Boolean(qYear && cYear && qYear === cYear);
+}
+
+async function tmdbSearchImdb(kind, clean, year, language) {
+  const q = encodeURIComponent(clean);
+  const lang = `&language=${encodeURIComponent(language)}`;
+  const withYear = year ? `&year=${encodeURIComponent(year)}` : '';
+  let src = await tmdbJson(`/search/${kind}?query=${q}${withYear}${lang}`);
+  let best = pickTmdbResult(src && src.results, year);
+  if (!best && withYear) {
+    src = await tmdbJson(`/search/${kind}?query=${q}${lang}`);
+    best = pickTmdbResult(src && src.results, year);
+  }
+  if (!best || !nameLooksRelated(clean, best, year)) return null;
+  const ext = await tmdbJson(`/${kind}/${best.id}/external_ids`);
+  const imdb = ext && ext.imdb_id;
+  return IMDB_RE.test(String(imdb || '')) ? imdb : null;
+}
+
 async function tmdbImdbForTitle(title, year, type) {
   const clean = cleanTitle(title);
   if (!clean || !config.tmdbApiKey) return null;
-  const q = encodeURIComponent(clean);
-  const yr = Number(year) || '';
-  const suffix = yr ? `&year=${encodeURIComponent(yr)}` : '';
   const order = type === 'movie' ? ['movie', 'tv'] : ['tv', 'movie'];
   for (const kind of order) {
-    const src =
-      kind === 'tv'
-        ? await tmdbJson(`/search/tv?query=${q}${suffix}&language=en-US`)
-        : await tmdbJson(`/search/movie?query=${q}${suffix}&language=en-US`);
-    const best = pickTmdbResult(src && src.results, year);
-    if (!best) continue;
-    const ext =
-      kind === 'tv'
-        ? await tmdbJson(`/tv/${best.id}/external_ids`)
-        : await tmdbJson(`/movie/${best.id}/external_ids`);
-    const imdb = ext && ext.imdb_id;
-    if (IMDB_RE.test(String(imdb || ''))) return imdb;
+    for (const language of ['it-IT', 'en-US']) {
+      const imdb = await tmdbSearchImdb(kind, clean, year, language);
+      if (imdb) return imdb;
+    }
   }
   return null;
 }
@@ -262,6 +356,7 @@ const stats = () => ({
   slugs: bySlug.size,
   negative: negCache.size,
   inflight: inflight.size + ensureInflight.size,
+  map: { ...mapInfo },
 });
 
 function flush() {
@@ -270,6 +365,7 @@ function flush() {
   negCache.clear();
   inflight.clear();
   ensureInflight.clear();
+  loadMap(); // la mappa precalcolata e' sempre disponibile
 }
 
 module.exports = {
@@ -279,6 +375,8 @@ module.exports = {
   resolveSlug,
   tmdbImdbForTitle,
   ensureForSlug,
+  loadMap,
+  MAP_FILE,
   stats,
   flush,
   IMDB_RE,
