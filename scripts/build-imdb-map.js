@@ -82,6 +82,31 @@ async function resolveOne(slug, name) {
   return imdbIds.imdbFor(slug) || null;
 }
 
+/** Mappa precedente su disco: count, mappa e generatedAt (o valori vuoti). */
+function readPrevious() {
+  const empty = { count: 0, map: null, generatedAt: null };
+  try {
+    if (!fs.existsSync(OUT)) return empty;
+    const prev = JSON.parse(fs.readFileSync(OUT, 'utf8').replace(/^\uFEFF/, ''));
+    const map = (prev && prev.map) || null;
+    return {
+      count: Number(prev && prev.count) || Object.keys(map || {}).length,
+      map,
+      generatedAt: (prev && prev.generatedAt) || null,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+/** Stessa mappa (stessi slug con gli stessi id), a prescindere dall'ordine. */
+function sameMap(a, b) {
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) if (a[k] !== b[k]) return false;
+  return true;
+}
+
 async function main() {
   const started = Date.now();
   console.log(`[map] refresh dei cataloghi (${config.scheduleTz})...`);
@@ -119,45 +144,46 @@ async function main() {
 
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
+  // Slug in ordine alfabetico: la serializzazione diventa deterministica e un
+  // semplice riordino dei cataloghi non produce un file (e quindi un commit)
+  // diverso a parita' di contenuto.
   const map = {};
-  for (const slug of slugs) {
+  for (const slug of slugs.slice().sort()) {
     const id = imdbIds.imdbFor(slug);
     if (id) map[slug] = id;
   }
-  const payload = {
-    version: 1,
-    generatedAt: new Date().toISOString(),
-    count: Object.keys(map).length,
-    map,
-  };
 
   // Guardia anti-regressione: se la fonte esterna risponde male (blocco IP,
   // outage) la copertura puo' crollare. Meglio una mappa vecchia che una
   // vuota: sotto la soglia il file NON viene toccato e il comando esce in
   // errore (cosi' anche la GitHub Action non committa nulla).
+  const previous = readPrevious();
   const minRatio = Number(process.env.MAP_MIN_RATIO || 0.8);
-  let previous = 0;
-  try {
-    if (fs.existsSync(OUT)) {
-      const prev = JSON.parse(fs.readFileSync(OUT, 'utf8').replace(/^\uFEFF/, ''));
-      previous = Number(prev && prev.count) || Object.keys((prev && prev.map) || {}).length;
-    }
-  } catch {
-    previous = 0;
-  }
-  const minAccepted = Math.max(1, Math.floor(previous * minRatio));
-  if (previous > 0 && payload.count < minAccepted) {
+  const minAccepted = Math.max(1, Math.floor(previous.count * minRatio));
+  if (previous.count > 0 && Object.keys(map).length < minAccepted) {
     throw new Error(
-      `copertura crollata: ${payload.count} voci < ${minAccepted} accettate ` +
-        `(mappa precedente: ${previous}). File non aggiornato.`,
+      `copertura crollata: ${Object.keys(map).length} voci < ${minAccepted} accettate ` +
+        `(mappa precedente: ${previous.count}). File non aggiornato.`,
     );
   }
+
+  // Se gli slug/gli id non sono cambiati conserviamo il `generatedAt` di prima:
+  // il file resta identico byte per byte, la GitHub Action non committa e non
+  // parte un deploy di Render inutile.
+  const unchanged = Boolean(previous.map) && sameMap(previous.map, map);
+  const payload = {
+    version: 1,
+    generatedAt: unchanged ? previous.generatedAt : new Date().toISOString(),
+    count: Object.keys(map).length,
+    map,
+  };
 
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, `${JSON.stringify(payload, null, 0)}\n`);
   console.log(
     `[map] scritto ${OUT}: ${payload.count}/${slugs.length} slug con IMDb ` +
-      `(senza: ${slugs.length - payload.count}) in ${Math.round((Date.now() - started) / 1000)}s`,
+      `(senza: ${slugs.length - payload.count}) in ${Math.round((Date.now() - started) / 1000)}s` +
+      `${unchanged ? ' — contenuto invariato' : ''}`,
   );
   return payload;
 }
